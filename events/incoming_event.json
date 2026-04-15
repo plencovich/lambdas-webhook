@@ -1,0 +1,14 @@
+{
+  "resource": "/incoming",
+  "path": "/incoming",
+  "httpMethod": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Event-Id": "incoming-example-001"
+  },
+  "requestContext": {
+    "requestId": "local-incoming-request"
+  },
+  "body": "{\"type\":\"incoming_message\",\"eventId\":\"incoming-example-001\",\"conversationId\":\"conversation-123\",\"message\":{\"text\":\"Hola\"}}",
+  "isBase64Encoded": false
+}

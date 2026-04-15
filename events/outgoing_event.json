@@ -1,0 +1,14 @@
+{
+  "resource": "/outgoing",
+  "path": "/outgoing",
+  "httpMethod": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Event-Id": "outgoing-example-001"
+  },
+  "requestContext": {
+    "requestId": "local-outgoing-request"
+  },
+  "body": "{\"type\":\"outgoing_message\",\"eventId\":\"outgoing-example-001\",\"conversationId\":\"conversation-123\",\"message\":{\"text\":\"Respuesta enviada\"}}",
+  "isBase64Encoded": false
+}

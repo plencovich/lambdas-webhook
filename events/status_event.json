@@ -1,0 +1,14 @@
+{
+  "resource": "/status",
+  "path": "/status",
+  "httpMethod": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Event-Id": "status-example-001"
+  },
+  "requestContext": {
+    "requestId": "local-status-request"
+  },
+  "body": "{\"type\":\"message_status\",\"eventId\":\"status-example-001\",\"conversationId\":\"conversation-123\",\"status\":\"delivered\"}",
+  "isBase64Encoded": false
+}
