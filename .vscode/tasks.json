@@ -1,0 +1,81 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "docker: build",
+      "type": "shell",
+      "command": "docker compose build",
+      "problemMatcher": []
+    },
+    {
+      "label": "docker: up",
+      "type": "shell",
+      "command": "docker compose up -d",
+      "problemMatcher": []
+    },
+    {
+      "label": "docker: down",
+      "type": "shell",
+      "command": "docker compose down",
+      "problemMatcher": []
+    },
+    {
+      "label": "docker: logs",
+      "type": "shell",
+      "command": "docker compose logs -f app",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "docker: shell",
+      "type": "shell",
+      "command": "docker compose exec app sh",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "python: command",
+      "type": "shell",
+      "command": "docker compose exec app sh -lc \"python ${input:pythonArgs}\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "python: compile src",
+      "type": "shell",
+      "command": "docker compose exec app python -m compileall src",
+      "problemMatcher": []
+    },
+    {
+      "label": "lambda: invoke incoming event",
+      "type": "shell",
+      "command": "docker compose exec app sh -lc \"python -c 'import json; from handlers.incoming_handler import lambda_handler; print(lambda_handler(json.load(open(\\\"events/incoming_event.json\\\")), None))'\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "lambda: invoke outgoing event",
+      "type": "shell",
+      "command": "docker compose exec app sh -lc \"python -c 'import json; from handlers.outgoing_handler import lambda_handler; print(lambda_handler(json.load(open(\\\"events/outgoing_event.json\\\")), None))'\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "lambda: invoke status event",
+      "type": "shell",
+      "command": "docker compose exec app sh -lc \"python -c 'import json; from handlers.status_handler import lambda_handler; print(lambda_handler(json.load(open(\\\"events/status_event.json\\\")), None))'\"",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "pythonArgs",
+      "type": "promptString",
+      "description": "Argumentos para ejecutar con python dentro del contenedor",
+      "default": "--version"
+    }
+  ]
+}
