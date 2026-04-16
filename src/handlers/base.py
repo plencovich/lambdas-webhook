@@ -1,10 +1,10 @@
-from http import HTTPStatus
 from typing import Any
 
 from services.webhook_service import WebhookIngestionService
-from utils.http import json_response
-from utils.log import get_logger
-from utils.payload import InvalidJsonPayload
+from utils.events import get_request_id
+from utils.exceptions import AppError
+from utils.http import accepted_response, error_response, internal_error_response
+from utils.log import get_logger, log_exception
 
 logger = get_logger(__name__)
 service = WebhookIngestionService()
@@ -15,24 +15,26 @@ def handle_webhook(
     event: dict[str, Any],
     context: Any | None = None,
 ) -> dict[str, Any]:
+    request_id = get_request_id(event, context)
     try:
         result = service.process(source_endpoint, event, context)
-        return json_response(HTTPStatus.ACCEPTED, result)
-    except InvalidJsonPayload as exc:
-        logger.warning("Invalid JSON payload: %s", exc)
-        return json_response(
-            HTTPStatus.BAD_REQUEST,
-            {
-                "error": "invalid_json",
-                "message": str(exc),
+        return accepted_response(result, request_id=request_id)
+    except AppError as exc:
+        logger.warning(
+            "Webhook processing failed",
+            extra={
+                "error_code": exc.error_code,
+                "request_id": request_id,
+                "source_endpoint": source_endpoint,
             },
         )
-    except Exception:
-        logger.exception("Unhandled webhook processing error")
-        return json_response(
-            HTTPStatus.INTERNAL_SERVER_ERROR,
-            {
-                "error": "internal_error",
-                "message": "Unexpected webhook processing error",
-            },
+        return error_response(exc, request_id=request_id)
+    except Exception as exc:
+        log_exception(
+            logger,
+            "Unhandled webhook processing error",
+            exc,
+            request_id=request_id,
+            source_endpoint=source_endpoint,
         )
+        return internal_error_response(request_id=request_id)

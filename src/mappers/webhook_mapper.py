@@ -3,7 +3,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from models.webhook_event import WebhookEnvelope
-from utils.config import get_env
+from utils.config import get_app_config
+from utils.events import get_request_id
 
 
 class WebhookMapper:
@@ -17,11 +18,11 @@ class WebhookMapper:
         headers = _normalize_headers(event.get("headers") or {})
 
         return WebhookEnvelope(
-            provider_name=get_env("PROVIDER_NAME", default="botmaker") or "botmaker",
+            provider_name=get_app_config().provider_name,
             source_endpoint=source_endpoint,
             payload=payload,
             received_at=datetime.now(UTC),
-            request_id=_get_request_id(event, context),
+            request_id=get_request_id(event, context),
             event_type=_extract_event_type(payload),
             idempotency_key=_extract_idempotency_key(headers, payload),
             headers=headers,
@@ -30,15 +31,6 @@ class WebhookMapper:
 
 def _normalize_headers(headers: Mapping[str, Any]) -> dict[str, str]:
     return {str(key).lower(): str(value) for key, value in headers.items()}
-
-
-def _get_request_id(event: Mapping[str, Any], context: Any | None) -> str | None:
-    if context is not None and getattr(context, "aws_request_id", None):
-        return str(context.aws_request_id)
-
-    request_context = event.get("requestContext") or {}
-    request_id = request_context.get("requestId")
-    return str(request_id) if request_id else None
 
 
 def _extract_event_type(payload: Mapping[str, Any]) -> str:
