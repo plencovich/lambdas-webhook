@@ -52,6 +52,7 @@ Globals:
     Tracing: Active
     Environment:
       Variables:
+        APP_ENV: !Ref Environment
         ENVIRONMENT: !Ref Environment
         LOG_LEVEL: !Ref LogLevel
         PROVIDER_NAME: botmaker

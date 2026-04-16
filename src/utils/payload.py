@@ -3,9 +3,11 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from utils.exceptions import ValidationError
 
-class InvalidJsonPayload(ValueError):
-    pass
+
+class InvalidJsonPayload(ValidationError):
+    error_code = "invalid_json_payload"
 
 
 def parse_json_body(event: Mapping[str, Any]) -> dict[str, Any]:
