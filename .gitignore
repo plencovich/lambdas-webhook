@@ -37,6 +37,7 @@ local-env.json
 *.key
 *.crt
 secrets.*
+.python-version
 
 # Logs
 *.log
