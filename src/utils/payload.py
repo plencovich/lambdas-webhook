@@ -11,6 +11,9 @@ class InvalidJsonPayload(ValidationError):
 
 
 def parse_json_body(event: Mapping[str, Any]) -> dict[str, Any]:
+    if "body" not in event:
+        return dict(event)
+
     body = event.get("body")
 
     if body is None or body == "":
