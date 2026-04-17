@@ -131,6 +131,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-status"
+      Description: Receives Botmaker conversation status snapshots and persists them to RDS.
       Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/botmaker-webhook-lambda-role"
       CodeUri: src/
       Handler: handlers.status_handler.lambda_handler

@@ -1,7 +1,7 @@
 # Botmaker Webhook Ingestion
 
 Base serverless en Python con AWS SAM para recibir webhooks de Botmaker y
-preparar la persistencia futura en AWS RDS MySQL.
+persistirlos en AWS RDS MySQL.
 
 ## Arquitectura
 
@@ -49,6 +49,55 @@ Gateway:
 Se eligio una Lambda por endpoint para mantener bajo acoplamiento entre flujos
 que pueden evolucionar con reglas, permisos, metricas y errores distintos. La
 logica compartida queda centralizada en services, mappers, repositories y utils.
+
+## Endpoint `POST /status`
+
+`/status` recibe snapshots de estado de conversacion/contacto enviados por
+Botmaker. No se modela solo como delivery status de un mensaje: el payload se
+guarda completo en `webhook_events_raw` y luego se normaliza hacia:
+
+- `customers`
+- `operators`
+- `conversations`
+- `messages`
+- `conversation_snapshots`
+- `conversation_contexts`
+
+El mapeo usa `PROVIDER_NAME=botmaker`, `source_endpoint=status` y
+`event_type=message_status_snapshot`.
+
+Decisiones de identificacion usadas para los payloads reales recibidos:
+
+- `customer_external_id`: top-level `_id_`, con fallback a
+  `LAST_MESSAGE.customerId`.
+- `conversation_external_id`: `LAST_MESSAGE.sessionId`. Si Botmaker envia un
+  snapshot sin `LAST_MESSAGE`, se usa `conversationId`/`sessionId` si existe y,
+  como ultimo fallback, el customer id para no perder raw/contexto.
+- `contact_external_id`: `PLATFORM_CONTACT_ID` o `LAST_MESSAGE.contactId`.
+- `conversation_started_at`: `LAST_MESSAGE.sessionCreationTime`, con fallback a
+  `CREATION_TIME`.
+- `snapshot_at`: `STATUS_CHANGE_TIME`, con fallback a `LAST_MESSAGE.date`.
+
+La clave de idempotencia `external_event_key` se calcula con hash estable de:
+proveedor, endpoint, conversacion, ultimo mensaje, `STATUS`,
+`STATUS_CHANGE_TIME`/`snapshot_at` y customer. Esto permite persistir como
+eventos distintos `delivered` y `read` para el mismo mensaje, pero ignorar el
+mismo snapshot repetido.
+
+La persistencia sigue este flujo:
+
+1. Parseo y validacion basica del body JSON.
+2. Insert idempotente en `webhook_events_raw` con estado `processing`.
+3. Si el raw ya existe, respuesta 200 con `duplicate_ignored`.
+4. Normalizacion transaccional en tablas de dominio.
+5. Marcado del raw como `processed`; si falla la normalizacion, se marca
+   `failed` con `processing_error`.
+
+Las variables dinamicas de negocio (`AP_*`, `Actividad*`, `IssueResuelto`,
+`PreguntarAccionCompleta`, `RespuestaAccionCompleta`, `typeDate`, etc.) se
+guardan en `conversation_contexts.context_json`. Las variables sensibles obvias
+como `AP_MailTomador` y `AP_TipoDocumentoTomador` no se expanden en el contexto
+normalizado; el raw conserva el payload completo.
 
 ## Dependencias
 
@@ -160,6 +209,20 @@ curl -X POST http://127.0.0.1:3000/incoming \
   -d '{"type":"incoming_message","eventId":"local-001"}'
 ```
 
+Ejemplo con `/status` usando un fixture real:
+
+```bash
+curl -X POST http://127.0.0.1:3000/status \
+  -H "Content-Type: application/json" \
+  --data-binary @tests/fixtures/status/response-13.json
+```
+
+Para ejecutar tests unitarios:
+
+```bash
+python -m unittest discover -s tests
+```
+
 ## Deploy
 
 Primer despliegue guiado:
@@ -187,14 +250,7 @@ subnets y security groups correspondientes antes del despliegue productivo.
 
 ## Estado actual
 
-La base deja preparado el flujo completo, pero todavia no implementa SQL ni
-persistencia real. El repositorio tiene un metodo placeholder para insertar
-eventos raw en `webhook_events_raw` mas adelante, y la conexion a RDS ya queda
-cacheada a nivel de modulo para reutilizarse entre invocaciones Lambda.
-
-Los proximos cambios esperados son:
-
-- implementar el insert idempotente en `webhook_events_raw`;
-- mapear payloads reales de Botmaker por endpoint;
-- agregar tests unitarios para mappers y services;
-- definir manejo transaccional cuando se persistan multiples tablas.
+`/status` ya implementa persistencia real e idempotente contra el DDL de
+`database/init_db.sql`. `/incoming` y `/outgoing` conservan el flujo base y
+persisten raw events con la misma capa comun, listos para sumar normalizacion
+especifica por endpoint.

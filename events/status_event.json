@@ -3,12 +3,11 @@
   "path": "/status",
   "httpMethod": "POST",
   "headers": {
-    "Content-Type": "application/json",
-    "X-Event-Id": "status-example-001"
+    "Content-Type": "application/json"
   },
   "requestContext": {
     "requestId": "local-status-request"
   },
-  "body": "{\"type\":\"message_status\",\"eventId\":\"status-example-001\",\"conversationId\":\"conversation-123\",\"status\":\"delivered\"}",
+  "body": "{\"RespuestaAccionCompleta\":\"¡Excelente! La constancia de cobertura tambien llegará a tu casilla de correos. ¡Muchas gracias por confiar en Me Cubro!\",\"country\":\"AR\",\"PENDING_MSGS\":0,\"CREATION_TIME\":\"2026-04-17T15:24:35.446Z\",\"PLATFORM_CONTACT_ID\":\"5491132985209\",\"gender\":\"\",\"_id_\":\"81U65QBK74F73THT0Y8T\",\"USER_LAST_MSG_RECEIVED\":\"2026-04-17T15:25:02.002Z\",\"LAST_NAME\":\"Ile\",\"locale\":\"\",\"FIRST_NAME\":\"Stylo\",\"CHAT_PLATFORM_ID\":\"whatsapp\",\"STATUS\":\"read\",\"EXECUTED_INTENTS\":[\"Otros\"],\"PreguntarAccionCompleta\":\"¿Pudiste avanzar en la contratacion de tu seguro?\",\"BOT_MUTED\":false,\"chatChannelId\":\"mecubro-whatsapp-5491171017096\",\"LAST_SEEN\":\"2026-04-17T15:25:01.157Z\",\"BUSINESS_ID\":\"mecubro\",\"LAST_MESSAGE\":{\"date\":\"2026-04-17T15:25:01.135Z\",\"chatPlatform\":\"whatsapp\",\"sessionCreationTime\":\"2026-04-17T15:24:35.446Z\",\"contactId\":\"5491132985209\",\"fromName\":\"Bot\",\"customerId\":\"81U65QBK74F73THT0Y8T\",\"_id_\":\"WAT3BQBQIGDCV3KGDLWH\",\"from\":\"bot\",\"sessionId\":\"81U65QBK74F73THT0Y8T_2026-04-17T15:24:35.446Z\",\"message\":\"https://mecubro.com/ar\",\"operatorId\":null},\"STATUS_CHANGE_TIME\":\"2026-04-17T15:25:02.002Z\",\"LAST_MESSAGE_CREATION_TIME\":\"2026-04-17T15:25:01.135Z\",\"USER_LAST_MSG_READ\":\"2026-04-17T15:25:02.002Z\",\"WHATSAPP_NUMBER\":\"5491171017096\"}",
   "isBase64Encoded": false
 }
