@@ -24,10 +24,10 @@ src/
   handlers/       Entrypoints Lambda por endpoint
   services/       Orquestacion del flujo de ingesta
   mappers/        Transformacion inicial de eventos
-  repositories/   Acceso futuro a RDS
+  repositories/   Acceso futuro a RDS y base comun de persistencia
   db/             Configuracion y conexion reutilizable
   models/         Tipos simples del dominio tecnico
-  utils/          Logging, HTTP, config y parsing
+  utils/          Config, logging, errores, HTTP y parsing
 layer/
   requirements.txt
 events/
@@ -60,6 +60,7 @@ RDS. AWS SAM construye el layer con `BuildMethod: python3.13`.
 
 Las funciones esperan estas variables, definidas desde `template.yaml`:
 
+- `APP_ENV`
 - `ENVIRONMENT`
 - `LOG_LEVEL`
 - `PROVIDER_NAME`
@@ -72,6 +73,62 @@ Las funciones esperan estas variables, definidas desde `template.yaml`:
 
 No hay credenciales hardcodeadas. Para despliegues reales, pasar los parametros
 de base de datos con `sam deploy --parameter-overrides` o mediante el pipeline.
+
+`APP_ENV` es la variable principal para el ambiente de aplicacion. `ENVIRONMENT`
+queda disponible por compatibilidad con el parametro `Environment` de SAM.
+
+## Modulos comunes
+
+La configuracion tecnica compartida queda centralizada en estos modulos:
+
+- `src/utils/config.py`: resuelve y valida variables de entorno. Expone
+  `get_app_config()` y `get_database_config()`.
+- `src/db/connection.py`: crea y reutiliza una conexion PyMySQL a Aurora MySQL.
+  Valida que la conexion cacheada siga viva antes de reutilizarla y expone
+  helpers para cursor y transacciones.
+- `src/utils/log.py`: configura logging JSON estructurado para CloudWatch, con
+  `get_logger()` y `log_exception()`.
+- `src/utils/exceptions.py`: define excepciones base del proyecto para errores
+  de configuracion, validacion, base de datos y procesamiento.
+- `src/utils/http.py`: estandariza respuestas Lambda/API Gateway de exito y
+  error.
+- `src/repositories/base.py`: ofrece una base reutilizable para queries
+  parametrizadas, inserts simples y transacciones.
+- `src/utils/events.py`: contiene helpers compartidos para datos comunes del
+  evento Lambda, como `request_id`.
+
+Las futuras lambdas no deberian leer variables de entorno, crear conexiones ni
+armar respuestas HTTP por su cuenta. Esas responsabilidades deben pasar por los
+modulos comunes.
+
+## Conexion a Aurora RDS
+
+La conexion usa `PyMySQL`, incluido en el Lambda Layer. La funcion
+`get_connection()` mantiene una conexion cacheada a nivel de modulo para
+aprovechar la reutilizacion del runtime de Lambda entre invocaciones. Antes de
+devolver la conexion cacheada ejecuta `ping(reconnect=False)`; si ya no sirve,
+la descarta y crea una nueva.
+
+Para operaciones que requieran multiples escrituras, usar la base transaccional
+desde repositories:
+
+```python
+from repositories.base import BaseRepository
+
+
+class ExampleRepository(BaseRepository):
+    def save_many(self, rows):
+        with self.transaction() as connection:
+            with connection.cursor() as cursor:
+                for row in rows:
+                    cursor.execute(
+                        "INSERT INTO example_table (name) VALUES (%s)",
+                        (row["name"],),
+                    )
+```
+
+Para operaciones simples se puede usar `execute()`, `fetch_one()`, `fetch_all()`
+o `insert_one()` desde `BaseRepository`.
 
 ## Build
 
