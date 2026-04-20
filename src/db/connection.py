@@ -77,8 +77,22 @@ def _create_connection() -> Any:
         )
         return connection
     except ModuleNotFoundError as exc:
+        logger.error(
+            "Database dependency is not installed",
+            extra={"dependency": "pymysql"},
+        )
         raise DatabaseConnectionError("PyMySQL dependency is not installed") from exc
     except Exception as exc:
+        logger.error(
+            "Database connection failed",
+            extra={
+                "db_host": config.host,
+                "db_name": config.database,
+                "db_port": config.port,
+                "connection_error_type": exc.__class__.__name__,
+                "connection_error_args": getattr(exc, "args", ()),
+            },
+        )
         raise DatabaseConnectionError("Could not connect to Aurora MySQL") from exc
 
 
