@@ -99,6 +99,61 @@ guardan en `conversation_contexts.context_json`. Las variables sensibles obvias
 como `AP_MailTomador` y `AP_TipoDocumentoTomador` no se expanden en el contexto
 normalizado; el raw conserva el payload completo.
 
+## Endpoint `POST /incoming`
+
+`/incoming` recibe eventos puntuales de mensaje entrante enviados por Botmaker.
+A diferencia de `/status`, no representa un snapshot global de conversacion ni
+de delivery status. El foco de normalizacion es el mensaje, manteniendo la
+trazabilidad minima de customer y conversacion para que luego `/status` pueda
+complementar metadata.
+
+El payload completo se guarda primero en `webhook_events_raw` con
+`PROVIDER_NAME=botmaker`, `source_endpoint=incoming` y
+`event_type=incoming_message`. Si el raw ya existe, la Lambda responde 200 con
+`duplicate_ignored` y no vuelve a insertar entidades normalizadas.
+
+Mapeo principal confirmado contra `database/init_db.sql` y los fixtures reales:
+
+- `message_external_id`: `_id_`.
+- `conversation_external_id`: `sessionId`.
+- `customer_external_id`: `customerId`.
+- `contact_external_id`: `contactId`.
+- `conversation_started_at`: `sessionCreationTime`.
+- `message_at`: `date`.
+- `channel`: `chatPlatform`.
+- `business_channel_address`: `WHATSAPP_NUMBER`.
+- `direction`: `inbound` cuando `from=user/customer` o `fromCustomer=true`.
+- `sender_type`: `customer` para los mensajes actuales de usuario.
+- `message_text`: `message`.
+- `is_button` y `button_label`: `isButton` y `buttonName`.
+- `queue_name` y `current_queue_name`: `queue`.
+
+La clave de idempotencia se calcula a nivel mensaje como:
+
+```text
+incoming:v1:{provider_name}:message:{_id_}
+```
+
+Si en el futuro Botmaker enviara un evento sin `_id_`, el mapper genera un
+fallback deterministico con `sessionId`, `customerId`, `date`, `contactId` y
+contenido del mensaje. Ese fallback permite conservar idempotencia sin mezclar
+eventos de `/incoming` con snapshots de `/status`.
+
+Persistencia normalizada:
+
+1. Insert idempotente del raw con estado `processing`.
+2. Upsert de `customers`, conservando datos existentes cuando el payload trae
+   nulos.
+3. Upsert acotado de `conversations`: customer, canal, direccion de canal,
+   inicio de conversacion, primer mensaje de usuario, ultimo mensaje y cola.
+   No actualiza `status_current`, contexto, resolucion, pendientes ni flags de
+   bot porque esos datos pertenecen al flujo `/status`.
+4. Upsert de `messages` con el `_id_` del mensaje como clave externa.
+5. Marcado del raw como `processed`; ante error de normalizacion queda `failed`
+   con `processing_error`.
+
+Fixtures reales del webhook entrante quedaron en `tests/fixtures/incoming`.
+
 ## Dependencias
 
 Las dependencias compartidas viven en `layer/requirements.txt`. Por ahora solo
@@ -206,7 +261,7 @@ Luego probar:
 ```bash
 curl -X POST http://127.0.0.1:3000/incoming \
   -H "Content-Type: application/json" \
-  -d '{"type":"incoming_message","eventId":"local-001"}'
+  --data-binary @tests/fixtures/incoming/entrante-01.json
 ```
 
 Ejemplo con `/status` usando un fixture real:
@@ -215,6 +270,14 @@ Ejemplo con `/status` usando un fixture real:
 curl -X POST http://127.0.0.1:3000/status \
   -H "Content-Type: application/json" \
   --data-binary @tests/fixtures/status/response-13.json
+```
+
+Ejemplo con `/incoming` usando otro fixture real:
+
+```bash
+curl -X POST http://127.0.0.1:3000/incoming \
+  -H "Content-Type: application/json" \
+  --data-binary @tests/fixtures/incoming/entrante-02.json
 ```
 
 Para ejecutar tests unitarios:
@@ -250,7 +313,6 @@ subnets y security groups correspondientes antes del despliegue productivo.
 
 ## Estado actual
 
-`/status` ya implementa persistencia real e idempotente contra el DDL de
-`database/init_db.sql`. `/incoming` y `/outgoing` conservan el flujo base y
-persisten raw events con la misma capa comun, listos para sumar normalizacion
-especifica por endpoint.
+`/status` y `/incoming` ya implementan persistencia real e idempotente contra
+el DDL de `database/init_db.sql`. `/outgoing` conserva el flujo base y persiste
+raw events con la misma capa comun, listo para sumar normalizacion especifica.

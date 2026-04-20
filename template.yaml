@@ -97,6 +97,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-incoming"
+      Description: Receives Botmaker incoming message events and persists them to RDS.
       Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/botmaker-webhook-lambda-role"
       CodeUri: src/
       Handler: handlers.incoming_handler.lambda_handler
