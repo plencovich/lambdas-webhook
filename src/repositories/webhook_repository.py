@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from models.incoming_event import IncomingWebhookEvent
+from models.outgoing_event import OutgoingWebhookEvent
 from models.status_event import StatusWebhookEvent
 from models.webhook_event import WebhookEnvelope
 from repositories.base import BaseRepository
@@ -54,6 +55,20 @@ class WebhookRepository(BaseRepository):
         )
 
     def register_incoming_raw_event(self, event: IncomingWebhookEvent) -> RawEventWriteResult:
+        return self._insert_raw_event(
+            provider_name=event.provider_name,
+            source_endpoint=event.source_endpoint,
+            event_type=event.event_type,
+            external_event_key=event.external_event_key,
+            conversation_external_id=event.conversation_external_id,
+            customer_external_id=event.customer_external_id,
+            received_at=event.received_at,
+            raw_payload=event.raw_payload,
+            processing_status="processing",
+            processed_at=None,
+        )
+
+    def register_outgoing_raw_event(self, event: OutgoingWebhookEvent) -> RawEventWriteResult:
         return self._insert_raw_event(
             provider_name=event.provider_name,
             source_endpoint=event.source_endpoint,
@@ -127,6 +142,41 @@ class WebhookRepository(BaseRepository):
             raise
         except Exception as exc:
             raise DatabaseQueryError("Incoming event persistence failed") from exc
+
+    def save_outgoing_event(
+        self,
+        event: OutgoingWebhookEvent,
+        raw_event_id: int,
+    ) -> dict[str, int | None]:
+        try:
+            with self.transaction() as connection:
+                with connection.cursor() as cursor:
+                    customer_id = self._upsert_customer(cursor, event)
+                    operator_id = self._upsert_operator(cursor, event)
+                    conversation_id = self._upsert_outgoing_conversation(
+                        cursor,
+                        event,
+                        customer_id,
+                    )
+                    message_id = self._upsert_message(
+                        cursor,
+                        event,
+                        conversation_id,
+                        customer_id,
+                        operator_id,
+                    )
+                    self._mark_raw_processed(cursor, raw_event_id)
+
+            return {
+                "customer_id": customer_id,
+                "operator_id": operator_id,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            }
+        except DatabaseQueryError:
+            raise
+        except Exception as exc:
+            raise DatabaseQueryError("Outgoing event persistence failed") from exc
 
     def mark_raw_failed(self, raw_event_id: int, error: str) -> None:
         self.execute(
@@ -212,7 +262,11 @@ class WebhookRepository(BaseRepository):
             connection.rollback()
             raise DatabaseQueryError("Raw webhook event insert failed") from exc
 
-    def _upsert_customer(self, cursor: Any, event: StatusWebhookEvent | IncomingWebhookEvent) -> int:
+    def _upsert_customer(
+        self,
+        cursor: Any,
+        event: StatusWebhookEvent | IncomingWebhookEvent | OutgoingWebhookEvent,
+    ) -> int:
         customer = event.customer
         cursor.execute(
             """
@@ -265,7 +319,11 @@ class WebhookRepository(BaseRepository):
         )
         return int(cursor.lastrowid)
 
-    def _upsert_operator(self, cursor: Any, event: StatusWebhookEvent) -> int | None:
+    def _upsert_operator(
+        self,
+        cursor: Any,
+        event: StatusWebhookEvent | OutgoingWebhookEvent,
+    ) -> int | None:
         operator = event.operator
         if operator is None:
             return None
@@ -488,10 +546,99 @@ class WebhookRepository(BaseRepository):
         )
         return int(cursor.lastrowid)
 
+    def _upsert_outgoing_conversation(
+        self,
+        cursor: Any,
+        event: OutgoingWebhookEvent,
+        customer_id: int,
+    ) -> int:
+        conversation = event.conversation
+        cursor.execute(
+            """
+            INSERT INTO conversations (
+                provider_name,
+                conversation_external_id,
+                customer_id,
+                channel,
+                business_channel_id,
+                business_channel_address,
+                conversation_started_at,
+                first_bot_response_at,
+                first_human_response_at,
+                last_message_at,
+                last_message_sender_type,
+                current_queue_name,
+                last_action_author_external_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id),
+                customer_id = VALUES(customer_id),
+                channel = VALUES(channel),
+                business_channel_id = COALESCE(VALUES(business_channel_id), business_channel_id),
+                business_channel_address = COALESCE(VALUES(business_channel_address), business_channel_address),
+                conversation_started_at = CASE
+                    WHEN conversation_started_at IS NULL THEN VALUES(conversation_started_at)
+                    WHEN VALUES(conversation_started_at) IS NULL THEN conversation_started_at
+                    ELSE LEAST(conversation_started_at, VALUES(conversation_started_at))
+                END,
+                first_bot_response_at = CASE
+                    WHEN first_bot_response_at IS NULL THEN VALUES(first_bot_response_at)
+                    WHEN VALUES(first_bot_response_at) IS NULL THEN first_bot_response_at
+                    ELSE LEAST(first_bot_response_at, VALUES(first_bot_response_at))
+                END,
+                first_human_response_at = CASE
+                    WHEN first_human_response_at IS NULL THEN VALUES(first_human_response_at)
+                    WHEN VALUES(first_human_response_at) IS NULL THEN first_human_response_at
+                    ELSE LEAST(first_human_response_at, VALUES(first_human_response_at))
+                END,
+                last_message_sender_type = CASE
+                    WHEN VALUES(last_message_at) IS NULL THEN last_message_sender_type
+                    WHEN last_message_at IS NULL OR VALUES(last_message_at) >= last_message_at THEN
+                        COALESCE(VALUES(last_message_sender_type), last_message_sender_type)
+                    ELSE last_message_sender_type
+                END,
+                current_queue_name = CASE
+                    WHEN VALUES(last_message_at) IS NULL THEN COALESCE(VALUES(current_queue_name), current_queue_name)
+                    WHEN last_message_at IS NULL OR VALUES(last_message_at) >= last_message_at THEN
+                        COALESCE(VALUES(current_queue_name), current_queue_name)
+                    ELSE current_queue_name
+                END,
+                last_action_author_external_id = CASE
+                    WHEN VALUES(last_message_at) IS NULL THEN
+                        COALESCE(VALUES(last_action_author_external_id), last_action_author_external_id)
+                    WHEN last_message_at IS NULL OR VALUES(last_message_at) >= last_message_at THEN
+                        COALESCE(VALUES(last_action_author_external_id), last_action_author_external_id)
+                    ELSE last_action_author_external_id
+                END,
+                last_message_at = CASE
+                    WHEN VALUES(last_message_at) IS NULL THEN last_message_at
+                    WHEN last_message_at IS NULL THEN VALUES(last_message_at)
+                    ELSE GREATEST(last_message_at, VALUES(last_message_at))
+                END
+            """,
+            (
+                conversation.provider_name,
+                conversation.conversation_external_id,
+                customer_id,
+                conversation.channel,
+                conversation.business_channel_id,
+                conversation.business_channel_address,
+                _mysql_datetime(conversation.conversation_started_at),
+                _mysql_datetime(conversation.first_bot_response_at),
+                _mysql_datetime(conversation.first_human_response_at),
+                _mysql_datetime(conversation.last_message_at),
+                conversation.last_message_sender_type,
+                conversation.current_queue_name,
+                conversation.last_action_author_external_id,
+            ),
+        )
+        return int(cursor.lastrowid)
+
     def _upsert_message(
         self,
         cursor: Any,
-        event: StatusWebhookEvent | IncomingWebhookEvent,
+        event: StatusWebhookEvent | IncomingWebhookEvent | OutgoingWebhookEvent,
         conversation_id: int,
         customer_id: int,
         operator_id: int | None,
