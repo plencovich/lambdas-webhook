@@ -3,12 +3,11 @@
   "path": "/outgoing",
   "httpMethod": "POST",
   "headers": {
-    "Content-Type": "application/json",
-    "X-Event-Id": "outgoing-example-001"
+    "Content-Type": "application/json"
   },
   "requestContext": {
     "requestId": "local-outgoing-request"
   },
-  "body": "{\"type\":\"outgoing_message\",\"eventId\":\"outgoing-example-001\",\"conversationId\":\"conversation-123\",\"message\":{\"text\":\"Respuesta enviada\"}}",
+  "body": "{\"date\":\"2026-04-17T18:40:43.103Z\",\"chatPlatform\":\"whatsapp\",\"contactId\":\"5493584232743\",\"_id_\":\"CK7YUGAQQ1NBRBJQNB22\",\"sessionId\":\"NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z\",\"message\":\"Buenas tardes, gracias por comunicarte con MeCubro, mi nombre es Sofia, ¿En qué puedo ayudarte?\\n\",\"operatorName\":\"Sofia Jacobi\",\"operatorEmail\":\"sofia.jacobi@mecubro.com\",\"sessionCreationTime\":\"2026-04-17T18:37:29.922Z\",\"fromName\":\"Sofia Jacobi\",\"customerId\":\"NWHAYJVORB4TSWTBY3PQ\",\"from\":\"operator\",\"operatorId\":\"wkNe9pzSpzW7D01bzsP53wAhGpb2\",\"queue\":\"Seguros-1\",\"WHATSAPP_NUMBER\":\"5491171017096\"}",
   "isBase64Encoded": false
 }

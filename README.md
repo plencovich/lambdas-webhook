@@ -154,6 +154,72 @@ Persistencia normalizada:
 
 Fixtures reales del webhook entrante quedaron en `tests/fixtures/incoming`.
 
+## Endpoint `POST /outgoing`
+
+`/outgoing` recibe eventos puntuales de mensaje saliente enviados por Botmaker.
+Completa la linea de tiempo que arman `/incoming` y `/status`: el primero
+registra mensajes del usuario, `/outgoing` registra mensajes emitidos desde
+Botmaker hacia el contacto, y `/status` agrega snapshots y estados posteriores.
+
+El payload completo se guarda primero en `webhook_events_raw` con
+`PROVIDER_NAME=botmaker`, `source_endpoint=outgoing` y
+`event_type=outgoing_message`. Si el raw ya existe, la Lambda responde 200 con
+`duplicate_ignored` y no vuelve a normalizar entidades.
+
+Mapeo principal confirmado contra `database/init_db.sql` y los 13 fixtures
+reales de `tests/fixtures/outgoing`:
+
+- `message_external_id`: `_id_`.
+- `conversation_external_id`: `sessionId`.
+- `customer_external_id`: `customerId`.
+- `contact_external_id`: `contactId`.
+- `operator_external_id`: `operatorId` cuando `from=operator`.
+- `operator_name`: `operatorName`, con fallback a `fromName`.
+- `operator_email`: `operatorEmail`.
+- `conversation_started_at`: `sessionCreationTime`.
+- `message_at`: `date`.
+- `channel`: `chatPlatform`.
+- `business_channel_address`: `WHATSAPP_NUMBER`.
+- `direction`: siempre `outbound` para este endpoint.
+- `sender_type`: `operator` para los fixtures actuales. El mapper tambien
+  acepta `bot` si Botmaker lo envia explicitamente.
+- `message_text`: `message`.
+- `queue_name` y `current_queue_name`: `queue`.
+- Adjuntos: `audio` se guarda como `attachment_type=audio`; `file` se guarda
+  como `attachment_type=file`.
+
+Los fixtures actuales muestran solo mensajes salientes de operador humano. No
+hay fixtures reales con `from=bot` en `/outgoing`; el mapper lo soporta de forma
+tolerante sin crear operador.
+
+La clave de idempotencia se calcula a nivel mensaje como:
+
+```text
+outgoing:v1:{provider_name}:message:{_id_}
+```
+
+Si Botmaker enviara un evento sin `_id_`, el mapper genera un fallback
+deterministico con `sessionId`, `customerId`, `date`, `from`, `operatorId`,
+contenido del mensaje y adjunto. En los fixtures reales `outgoing-05.json` y
+`outgoing-06.json` tienen el mismo `_id_`, por lo que se resuelven como el mismo
+evento idempotente.
+
+Persistencia normalizada:
+
+1. Insert idempotente del raw con estado `processing`.
+2. Upsert de `customers`, conservando datos existentes cuando el payload no
+   trae informacion mas completa.
+3. Upsert de `operators` solo cuando el sender es operador y existe identificador
+   o metadata suficiente.
+4. Upsert acotado de `conversations`: customer, canal, direccion de canal,
+   inicio de conversacion, primera respuesta bot/humana segun `sender_type`,
+   ultimo mensaje, ultima cola y ultimo autor cuando aplica. No actualiza
+   `status_current`, contexto, resolucion, pendientes ni flags de bot.
+5. Upsert de `messages` con `_id_` como clave externa, `direction=outbound` y
+   `operator_id` asociado cuando corresponde.
+6. Marcado del raw como `processed`; ante error de normalizacion queda `failed`
+   con `processing_error`.
+
 ## Dependencias
 
 Las dependencias compartidas viven en `layer/requirements.txt`. Por ahora solo
@@ -261,7 +327,7 @@ Luego probar:
 ```bash
 curl -X POST http://127.0.0.1:3000/incoming \
   -H "Content-Type: application/json" \
-  --data-binary @tests/fixtures/incoming/entrante-01.json
+  --data-binary @tests/fixtures/incoming/incoming-01.json
 ```
 
 Ejemplo con `/status` usando un fixture real:
@@ -269,7 +335,7 @@ Ejemplo con `/status` usando un fixture real:
 ```bash
 curl -X POST http://127.0.0.1:3000/status \
   -H "Content-Type: application/json" \
-  --data-binary @tests/fixtures/status/response-13.json
+  --data-binary @tests/fixtures/status/status-13.json
 ```
 
 Ejemplo con `/incoming` usando otro fixture real:
@@ -277,7 +343,15 @@ Ejemplo con `/incoming` usando otro fixture real:
 ```bash
 curl -X POST http://127.0.0.1:3000/incoming \
   -H "Content-Type: application/json" \
-  --data-binary @tests/fixtures/incoming/entrante-02.json
+  --data-binary @tests/fixtures/incoming/incoming-02.json
+```
+
+Ejemplo con `/outgoing` usando un fixture real:
+
+```bash
+curl -X POST http://127.0.0.1:3000/outgoing \
+  -H "Content-Type: application/json" \
+  --data-binary @tests/fixtures/outgoing/outgoing-01.json
 ```
 
 Para ejecutar tests unitarios:
@@ -313,6 +387,7 @@ subnets y security groups correspondientes antes del despliegue productivo.
 
 ## Estado actual
 
-`/status` y `/incoming` ya implementan persistencia real e idempotente contra
-el DDL de `database/init_db.sql`. `/outgoing` conserva el flujo base y persiste
-raw events con la misma capa comun, listo para sumar normalizacion especifica.
+`/status`, `/incoming` y `/outgoing` implementan persistencia real e
+idempotente contra el DDL de `database/init_db.sql`. `/outgoing` normaliza raw,
+customer, operator, conversation y message sin invadir las tablas de snapshot y
+contexto propias de `/status`.
