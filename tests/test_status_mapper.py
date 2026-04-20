@@ -126,6 +126,16 @@ class StatusMapperTest(unittest.TestCase):
         self.assertEqual(event.operator.operator_external_id, "yucPtGbocIQnnJzTjinZpUtrEbq1")
         self.assertEqual(event.operator.operator_email, "vanesa.morales@mecubro.com")
 
+    def test_maps_operator_file_attachment(self):
+        event = map_payload(load_payload("status-15.json"))
+
+        self.assertEqual(event.message.sender_type, "operator")
+        self.assertEqual(event.message.direction, "outbound")
+        self.assertTrue(event.message.has_attachment)
+        self.assertEqual(event.message.attachment_type, "file")
+        self.assertIn(".xlsx", event.message.attachment_url)
+        self.assertIn("file", event.message.client_payload["last_message"])
+
     def test_extracts_dynamic_context_without_promoting_sensitive_fields(self):
         event = map_payload(load_payload("status-01.json"))
 

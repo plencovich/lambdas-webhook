@@ -280,7 +280,7 @@ def _message(
         )
         or False,
         has_attachment=has_attachment,
-        attachment_type="audio" if _text(last_message.get("audio")) else ("attachment" if has_attachment else None),
+        attachment_type=_attachment_type(last_message, attachment_url),
         attachment_url=attachment_url,
         intent_name=None,
         queue_name=queue_name,
@@ -302,6 +302,11 @@ def _message(
                     "buttonName",
                     "hasAttachment",
                     "audio",
+                    "file",
+                    "attachmentUrl",
+                    "fileUrl",
+                    "mediaUrl",
+                    "chatPlatform",
                     "operatorId",
                     "operatorName",
                     "operatorEmail",
@@ -373,10 +378,21 @@ def _sender_name(last_message: Mapping[str, Any], sender_type: str | None) -> st
 def _attachment_url(last_message: Mapping[str, Any]) -> str | None:
     return (
         _text(last_message.get("audio"))
+        or _text(last_message.get("file"))
         or _text(last_message.get("attachmentUrl"))
         or _text(last_message.get("fileUrl"))
         or _text(last_message.get("mediaUrl"))
     )
+
+
+def _attachment_type(last_message: Mapping[str, Any], attachment_url: str | None) -> str | None:
+    if not attachment_url:
+        return None
+    if _text(last_message.get("audio")):
+        return "audio"
+    if _text(last_message.get("file")) or _text(last_message.get("fileUrl")):
+        return "file"
+    return _first_text(last_message, "attachmentType", "mediaType") or "attachment"
 
 
 def _first_text(payload: Mapping[str, Any], *keys: str) -> str | None:
