@@ -377,19 +377,34 @@ sam deploy --guided
 Despliegue no interactivo de ejemplo:
 
 ```bash
-sam deploy \
-  --parameter-overrides \
-    Environment=dev \
-    LogLevel=INFO \
-    DbHost=example.cluster-xxxxx.us-east-1.rds.amazonaws.com \
-    DbPort=3306 \
-    DbName=botmaker \
-    DbUser=app_user \
-    DbPassword='change-me'
+sam build
+
+sam deploy --parameter-overrides \
+  --template-file .aws-sam/build/template.yaml \
+  Environment=dev \
+  LogLevel=INFO \
+  DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com \
+  DbPort=3306 \
+  DbName=mecubrochatdev \
+  DbUser=admin \
+  DbPassword='--------------' \
+  LambdaSubnetIds='subnet-0227e23f3483b5066,subnet-0e2ef6f846e56d35e,subnet-00e22d5c6f0406810' \
+  LambdaSecurityGroupIds='sg-0f7dcb59deaf75f34'
 ```
 
-Si RDS esta en subnets privadas, agregar `VpcConfig` a las funciones con los
-subnets y security groups correspondientes antes del despliegue productivo.
+Si RDS esta en subnets privadas, pasar `LambdaSubnetIds` con subnets privadas
+de la misma VPC de RDS. Con `LambdaVpcId`, el stack crea un security group para
+las Lambdas. Con `RdsSecurityGroupId1` y opcionalmente `RdsSecurityGroupId2`, el
+stack agrega reglas inbound MySQL/Aurora `TCP 3306` desde el security group de
+Lambda hacia los security groups de RDS.
+
+Para usar un security group de Lambda ya existente, pasar `LambdaSecurityGroupIds`
+en lugar de `LambdaVpcId`. En ese caso, configurar manualmente el inbound de RDS.
+
+Ejecutar `sam build` antes de `sam deploy` es necesario para que SAM instale las
+dependencias de `layer/requirements.txt` dentro del Lambda Layer. Si se despliega
+sin build, el layer sube solo con el archivo `requirements.txt` y la funcion falla
+con `ModuleNotFoundError` para `pymysql`.
 
 ## Estado actual
 

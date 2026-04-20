@@ -21,6 +21,19 @@ Parameters:
       - ERROR
       - CRITICAL
 
+  LambdaRoleName:
+    Type: String
+    Default: botmaker-webhook-lambda-role
+    Description: Existing IAM role name used by webhook Lambdas.
+
+  ManageLambdaVpcAccessPolicy:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Whether this stack should attach Lambda VPC permissions to the existing IAM role.
+
   DbHost:
     Type: String
     Default: ""
@@ -50,12 +63,66 @@ Parameters:
     NoEcho: true
     Description: RDS database password.
 
+  LambdaSubnetIds:
+    Type: String
+    Default: ""
+    Description: Comma-separated private subnet IDs for Lambda VPC access.
+
+  LambdaSecurityGroupIds:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated existing security group IDs for Lambda VPC access.
+
+  LambdaVpcId:
+    Type: String
+    Default: ""
+    Description: Optional VPC ID used to create a Lambda security group.
+
+  RdsSecurityGroupId1:
+    Type: String
+    Default: ""
+    Description: Optional first RDS security group ID to allow Lambda MySQL access.
+
+  RdsSecurityGroupId2:
+    Type: String
+    Default: ""
+    Description: Optional second RDS security group ID to allow Lambda MySQL access.
+
+Conditions:
+  HasLambdaSubnets: !Not [!Equals [!Ref LambdaSubnetIds, ""]]
+  HasExplicitLambdaSecurityGroupIds: !Not [!Equals [!Ref LambdaSecurityGroupIds, ""]]
+  HasManagedLambdaSecurityGroup: !And
+    - !Condition HasLambdaSubnets
+    - !Not [!Equals [!Ref LambdaVpcId, ""]]
+  HasLambdaVpcConfig: !And
+    - !Condition HasLambdaSubnets
+    - !Or
+      - !Condition HasExplicitLambdaSecurityGroupIds
+      - !Condition HasManagedLambdaSecurityGroup
+  HasManagedRdsIngress1: !And
+    - !Condition HasManagedLambdaSecurityGroup
+    - !Not [!Equals [!Ref RdsSecurityGroupId1, ""]]
+  HasManagedRdsIngress2: !And
+    - !Condition HasManagedLambdaSecurityGroup
+    - !Not [!Equals [!Ref RdsSecurityGroupId2, ""]]
+  HasManagedLambdaVpcAccessPolicy: !And
+    - !Condition HasLambdaVpcConfig
+    - !Equals [!Ref ManageLambdaVpcAccessPolicy, "true"]
+
 Globals:
   Function:
     Runtime: python3.13
     Timeout: 10
     MemorySize: 256
     Tracing: Active
+    VpcConfig: !If
+      - HasLambdaVpcConfig
+      - SecurityGroupIds: !If
+          - HasExplicitLambdaSecurityGroupIds
+          - !Split [",", !Ref LambdaSecurityGroupIds]
+          - - !Ref LambdaSecurityGroup
+        SubnetIds: !Split [",", !Ref LambdaSubnetIds]
+      - !Ref AWS::NoValue
     Environment:
       Variables:
         APP_ENV: !Ref Environment
@@ -70,6 +137,59 @@ Globals:
         DB_CONNECT_TIMEOUT_SECONDS: "5"
 
 Resources:
+  LambdaVpcAccessPolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasManagedLambdaVpcAccessPolicy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-lambda-vpc-access"
+      Roles:
+        - !Ref LambdaRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: "*"
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: HasManagedLambdaSecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} Lambda access to RDS"
+      VpcId: !Ref LambdaVpcId
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-lambda"
+
+  RdsSecurityGroupIngressFromLambda1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasManagedRdsIngress1
+    Properties:
+      GroupId: !Ref RdsSecurityGroupId1
+      IpProtocol: tcp
+      FromPort: !Ref DbPort
+      ToPort: !Ref DbPort
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: !Sub "Allow ${AWS::StackName} Lambda access to MySQL"
+
+  RdsSecurityGroupIngressFromLambda2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasManagedRdsIngress2
+    Properties:
+      GroupId: !Ref RdsSecurityGroupId2
+      IpProtocol: tcp
+      FromPort: !Ref DbPort
+      ToPort: !Ref DbPort
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: !Sub "Allow ${AWS::StackName} Lambda access to MySQL"
+
   WebhookApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -98,7 +218,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-incoming"
       Description: Receives Botmaker incoming message events and persists them to RDS.
-      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/botmaker-webhook-lambda-role"
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${LambdaRoleName}"
       CodeUri: src/
       Handler: handlers.incoming_handler.lambda_handler
       Layers:
@@ -116,7 +236,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-outgoing"
       Description: Receives Botmaker outgoing message events and persists them to RDS.
-      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/botmaker-webhook-lambda-role"
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${LambdaRoleName}"
       CodeUri: src/
       Handler: handlers.outgoing_handler.lambda_handler
       Layers:
@@ -134,7 +254,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-status"
       Description: Receives Botmaker conversation status snapshots and persists them to RDS.
-      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/botmaker-webhook-lambda-role"
+      Role: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${LambdaRoleName}"
       CodeUri: src/
       Handler: handlers.status_handler.lambda_handler
       Layers:
@@ -148,6 +268,11 @@ Resources:
             Method: POST
 
 Outputs:
+  LambdaSecurityGroupId:
+    Condition: HasManagedLambdaSecurityGroup
+    Description: Managed Lambda security group ID.
+    Value: !Ref LambdaSecurityGroup
+
   WebhookApiUrl:
     Description: API Gateway stage URL.
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"

@@ -16,8 +16,9 @@ region = "us-east-1"
 confirm_changeset = true
 s3_bucket = "mecubro-chat-develop"
 fail_on_empty_changeset = false
-parameter_overrides = "Environment=dev LogLevel=INFO DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com DbPort=3306 DbName=mecubrochatdev DbUser=admin"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "Environment=dev LogLevel=INFO DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com DbPort=3306 DbName=mecubrochatdev DbUser=admin LambdaSubnetIds=subnet-0227e23f3483b5066,subnet-0e2ef6f846e56d35e,subnet-00e22d5c6f0406810 LambdaSecurityGroupIds=sg-0f7dcb59deaf75f34"
 
 [default.local_start_api.parameters]
 warm_containers = "EAGER"
-parameter_overrides = "Environment=dev LogLevel=INFO DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com DbPort=3306 DbName=mecubrochatdev DbUser=admin"
+parameter_overrides = "Environment=dev LogLevel=INFO DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com DbPort=3306 DbName=mecubrochatdev DbUser=admin LambdaSubnetIds=subnet-0227e23f3483b5066,subnet-0e2ef6f846e56d35e,subnet-00e22d5c6f0406810 LambdaSecurityGroupIds=sg-0f7dcb59deaf75f34"
