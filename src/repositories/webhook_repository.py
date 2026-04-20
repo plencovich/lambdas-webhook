@@ -647,8 +647,9 @@ class WebhookRepository(BaseRepository):
         if message is None:
             return None
 
+        delivery_status_should_update = _delivery_status_should_update_sql()
         cursor.execute(
-            """
+            f"""
             INSERT INTO messages (
                 provider_name,
                 message_external_id,
@@ -691,11 +692,18 @@ class WebhookRepository(BaseRepository):
                 attachment_url = COALESCE(VALUES(attachment_url), attachment_url),
                 intent_name = COALESCE(VALUES(intent_name), intent_name),
                 queue_name = COALESCE(VALUES(queue_name), queue_name),
-                delivery_status = COALESCE(VALUES(delivery_status), delivery_status),
+                delivery_status = CASE
+                    WHEN {delivery_status_should_update} THEN VALUES(delivery_status)
+                    ELSE delivery_status
+                END,
                 delivery_status_at = CASE
-                    WHEN VALUES(delivery_status_at) IS NULL THEN delivery_status_at
-                    WHEN delivery_status_at IS NULL THEN VALUES(delivery_status_at)
-                    ELSE GREATEST(delivery_status_at, VALUES(delivery_status_at))
+                    WHEN {delivery_status_should_update} THEN
+                        CASE
+                            WHEN VALUES(delivery_status_at) IS NULL THEN delivery_status_at
+                            WHEN delivery_status_at IS NULL THEN VALUES(delivery_status_at)
+                            ELSE GREATEST(delivery_status_at, VALUES(delivery_status_at))
+                        END
+                    ELSE delivery_status_at
                 END,
                 client_payload = COALESCE(VALUES(client_payload), client_payload)
             """,
@@ -898,3 +906,36 @@ def _tinyint_or_none(value: bool | None) -> int | None:
     if value is None:
         return None
     return _tinyint(value)
+
+
+def _delivery_status_should_update_sql() -> str:
+    new_rank = _delivery_status_rank_sql("VALUES(delivery_status)")
+    current_rank = _delivery_status_rank_sql("delivery_status")
+    return f"""
+                    VALUES(delivery_status) IS NOT NULL
+                    AND (
+                        delivery_status IS NULL
+                        OR {new_rank} > {current_rank}
+                        OR (
+                            {new_rank} = {current_rank}
+                            AND (
+                                delivery_status_at IS NULL
+                                OR VALUES(delivery_status_at) IS NULL
+                                OR VALUES(delivery_status_at) >= delivery_status_at
+                            )
+                        )
+                    )
+                """
+
+
+def _delivery_status_rank_sql(expression: str) -> str:
+    return f"""
+                        CASE LOWER({expression})
+                            WHEN 'queued' THEN 10
+                            WHEN 'sent' THEN 20
+                            WHEN 'delivered' THEN 30
+                            WHEN 'read' THEN 40
+                            WHEN 'failed' THEN 50
+                            ELSE 0
+                        END
+                    """

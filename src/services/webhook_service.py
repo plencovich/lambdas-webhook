@@ -14,6 +14,7 @@ from utils.log import get_logger
 from utils.payload import parse_json_body
 
 logger = get_logger(__name__)
+_RETRYABLE_DUPLICATE_RAW_STATUSES = {"failed"}
 
 
 class WebhookIngestionService:
@@ -94,26 +95,39 @@ class WebhookIngestionService:
 
         raw_result = self._repository.register_status_raw_event(status_event)
         if raw_result.duplicate:
-            logger.info(
-                "Duplicate status webhook ignored",
-                extra={
+            if _should_retry_duplicate_raw(raw_result):
+                logger.info(
+                    "Retrying failed status webhook",
+                    extra={
+                        "request_id": status_event.request_id,
+                        "source_endpoint": status_event.source_endpoint,
+                        "external_event_key": status_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **status_event.trace_context,
+                    },
+                )
+            else:
+                logger.info(
+                    "Duplicate status webhook ignored",
+                    extra={
+                        "request_id": status_event.request_id,
+                        "source_endpoint": status_event.source_endpoint,
+                        "external_event_key": status_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **status_event.trace_context,
+                    },
+                )
+                return {
+                    "status": "duplicate_ignored",
+                    "provider": status_event.provider_name,
+                    "endpoint": status_event.source_endpoint,
+                    "event_type": status_event.event_type,
                     "request_id": status_event.request_id,
-                    "source_endpoint": status_event.source_endpoint,
                     "external_event_key": status_event.external_event_key,
                     "raw_event_id": raw_result.raw_event_id,
-                    "raw_processing_status": raw_result.processing_status,
-                    **status_event.trace_context,
-                },
-            )
-            return {
-                "status": "duplicate_ignored",
-                "provider": status_event.provider_name,
-                "endpoint": status_event.source_endpoint,
-                "event_type": status_event.event_type,
-                "request_id": status_event.request_id,
-                "external_event_key": status_event.external_event_key,
-                "raw_event_id": raw_result.raw_event_id,
-            }
+                }
 
         if raw_result.raw_event_id is None:
             raise DatabaseError("Raw status webhook event was not persisted")
@@ -174,22 +188,35 @@ class WebhookIngestionService:
 
         raw_result = self._repository.register_incoming_raw_event(incoming_event)
         if raw_result.duplicate:
-            logger.info(
-                "Duplicate incoming webhook ignored",
-                extra={
-                    "request_id": incoming_event.request_id,
-                    "source_endpoint": incoming_event.source_endpoint,
-                    "external_event_key": incoming_event.external_event_key,
-                    "raw_event_id": raw_result.raw_event_id,
-                    "raw_processing_status": raw_result.processing_status,
-                    **incoming_event.trace_context,
-                },
-            )
-            return _incoming_response(
-                incoming_event,
-                status="duplicate_ignored",
-                raw_event_id=raw_result.raw_event_id,
-            )
+            if _should_retry_duplicate_raw(raw_result):
+                logger.info(
+                    "Retrying failed incoming webhook",
+                    extra={
+                        "request_id": incoming_event.request_id,
+                        "source_endpoint": incoming_event.source_endpoint,
+                        "external_event_key": incoming_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **incoming_event.trace_context,
+                    },
+                )
+            else:
+                logger.info(
+                    "Duplicate incoming webhook ignored",
+                    extra={
+                        "request_id": incoming_event.request_id,
+                        "source_endpoint": incoming_event.source_endpoint,
+                        "external_event_key": incoming_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **incoming_event.trace_context,
+                    },
+                )
+                return _incoming_response(
+                    incoming_event,
+                    status="duplicate_ignored",
+                    raw_event_id=raw_result.raw_event_id,
+                )
 
         if raw_result.raw_event_id is None:
             raise DatabaseError("Raw incoming webhook event was not persisted")
@@ -249,22 +276,35 @@ class WebhookIngestionService:
 
         raw_result = self._repository.register_outgoing_raw_event(outgoing_event)
         if raw_result.duplicate:
-            logger.info(
-                "Duplicate outgoing webhook ignored",
-                extra={
-                    "request_id": outgoing_event.request_id,
-                    "source_endpoint": outgoing_event.source_endpoint,
-                    "external_event_key": outgoing_event.external_event_key,
-                    "raw_event_id": raw_result.raw_event_id,
-                    "raw_processing_status": raw_result.processing_status,
-                    **outgoing_event.trace_context,
-                },
-            )
-            return _outgoing_response(
-                outgoing_event,
-                status="duplicate_ignored",
-                raw_event_id=raw_result.raw_event_id,
-            )
+            if _should_retry_duplicate_raw(raw_result):
+                logger.info(
+                    "Retrying failed outgoing webhook",
+                    extra={
+                        "request_id": outgoing_event.request_id,
+                        "source_endpoint": outgoing_event.source_endpoint,
+                        "external_event_key": outgoing_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **outgoing_event.trace_context,
+                    },
+                )
+            else:
+                logger.info(
+                    "Duplicate outgoing webhook ignored",
+                    extra={
+                        "request_id": outgoing_event.request_id,
+                        "source_endpoint": outgoing_event.source_endpoint,
+                        "external_event_key": outgoing_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "raw_processing_status": raw_result.processing_status,
+                        **outgoing_event.trace_context,
+                    },
+                )
+                return _outgoing_response(
+                    outgoing_event,
+                    status="duplicate_ignored",
+                    raw_event_id=raw_result.raw_event_id,
+                )
 
         if raw_result.raw_event_id is None:
             raise DatabaseError("Raw outgoing webhook event was not persisted")
@@ -358,3 +398,10 @@ def _outgoing_response(
     if entities is not None:
         response["entities"] = entities
     return response
+
+
+def _should_retry_duplicate_raw(raw_result: Any) -> bool:
+    return (
+        raw_result.raw_event_id is not None
+        and raw_result.processing_status in _RETRYABLE_DUPLICATE_RAW_STATUSES
+    )

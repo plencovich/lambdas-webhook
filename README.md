@@ -88,10 +88,16 @@ La persistencia sigue este flujo:
 
 1. Parseo y validacion basica del body JSON.
 2. Insert idempotente en `webhook_events_raw` con estado `processing`.
-3. Si el raw ya existe, respuesta 200 con `duplicate_ignored`.
+3. Si el raw ya existe y esta `processed`, respuesta 200 con
+   `duplicate_ignored`. Si existe en `failed`, se reintenta la normalizacion
+   usando el mismo `raw_event_id`.
 4. Normalizacion transaccional en tablas de dominio.
 5. Marcado del raw como `processed`; si falla la normalizacion, se marca
    `failed` con `processing_error`.
+
+Cuando `/status` complementa `messages.delivery_status`, conserva la progresion
+de estado (`queued`/`sent` -> `delivered` -> `read` -> `failed`) para evitar que
+un snapshot tardio degrade un mensaje ya marcado como leido.
 
 Las variables dinamicas de negocio (`AP_*`, `Actividad*`, `IssueResuelto`,
 `PreguntarAccionCompleta`, `RespuestaAccionCompleta`, `typeDate`, etc.) se
