@@ -33,54 +33,51 @@ def map_payload(payload: dict):
 
 
 class StatusMapperTest(unittest.TestCase):
-    def test_external_event_key_distinguishes_delivered_and_read_for_same_message(self):
-        delivered = map_payload(load_payload("response-01.json"))
-        read = map_payload(load_payload("response-02.json"))
+    def test_external_event_key_distinguishes_repeated_status_snapshots_for_same_message(self):
+        first_snapshot = map_payload(load_payload("status-07.json"))
+        later_snapshot = map_payload(load_payload("status-08.json"))
 
-        self.assertEqual(delivered.message.message_external_id, read.message.message_external_id)
-        self.assertEqual(delivered.conversation_external_id, read.conversation_external_id)
-        self.assertEqual(delivered.snapshot.snapshot_at, read.snapshot.snapshot_at)
-        self.assertNotEqual(delivered.external_event_key, read.external_event_key)
+        self.assertEqual(first_snapshot.message.message_external_id, later_snapshot.message.message_external_id)
+        self.assertEqual(first_snapshot.conversation_external_id, later_snapshot.conversation_external_id)
+        self.assertEqual(first_snapshot.snapshot.status_current, later_snapshot.snapshot.status_current)
+        self.assertNotEqual(first_snapshot.snapshot.snapshot_at, later_snapshot.snapshot.snapshot_at)
+        self.assertNotEqual(first_snapshot.external_event_key, later_snapshot.external_event_key)
 
-    def test_maps_customer_button_message(self):
-        event = map_payload(load_payload("response-01.json"))
+    def test_maps_bot_message_snapshot(self):
+        event = map_payload(load_payload("status-01.json"))
 
-        self.assertEqual(event.customer.customer_external_id, "IFPQW13ATPZK7FRZFJZH")
+        self.assertEqual(event.customer.customer_external_id, "NWHAYJVORB4TSWTBY3PQ")
         self.assertEqual(
             event.conversation_external_id,
-            "IFPQW13ATPZK7FRZFJZH_2026-04-17T13:32:23.665Z",
+            "NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z",
         )
-        self.assertEqual(event.message.sender_type, "customer")
-        self.assertEqual(event.message.direction, "inbound")
-        self.assertTrue(event.message.is_button)
-        self.assertEqual(event.message.button_label, "No")
-        self.assertTrue(event.message.is_customer_message)
+        self.assertEqual(event.message.sender_type, "bot")
+        self.assertEqual(event.message.direction, "outbound")
+        self.assertFalse(event.message.is_button)
+        self.assertFalse(event.message.is_customer_message)
 
     def test_maps_operator_audio_attachment(self):
-        event = map_payload(load_payload("response-10.json"))
+        event = map_payload(load_payload("status-21.json"))
 
         self.assertEqual(event.message.sender_type, "operator")
         self.assertEqual(event.message.direction, "outbound")
         self.assertTrue(event.message.has_attachment)
         self.assertEqual(event.message.attachment_type, "audio")
         self.assertIn("storage.googleapis.com", event.message.attachment_url)
-        self.assertEqual(event.operator.operator_external_id, "wkNe9pzSpzW7D01bzsP53wAhGpb2")
-        self.assertEqual(event.operator.operator_email, "sofia.jacobi@mecubro.com")
+        self.assertEqual(event.operator.operator_external_id, "yucPtGbocIQnnJzTjinZpUtrEbq1")
+        self.assertEqual(event.operator.operator_email, "vanesa.morales@mecubro.com")
 
     def test_extracts_dynamic_context_without_promoting_sensitive_fields(self):
-        event = map_payload(load_payload("response-01.json"))
+        event = map_payload(load_payload("status-01.json"))
 
-        self.assertEqual(event.context.quote_external_id, "1824465133")
-        self.assertEqual(event.context.coverage_external_id, "1853152764")
-        self.assertEqual(str(event.context.quoted_total_amount), "2290.84")
-        self.assertEqual(event.context.activity_name, "Fotografo")
-        self.assertIn("AP_QuoteId", event.context.context_json)
-        self.assertIn("IssueResuelto", event.context.context_json)
+        self.assertIsNone(event.context.quote_external_id)
+        self.assertIsNone(event.context.coverage_external_id)
+        self.assertIn("RespuestaAccionCompleta", event.context.context_json)
         self.assertNotIn("AP_MailTomador", event.context.context_json)
         self.assertNotIn("AP_TipoDocumentoTomador", event.context.context_json)
 
     def test_all_real_fixtures_are_mappable(self):
-        for path in sorted(FIXTURES_DIR.glob("response-*.json")):
+        for path in sorted(FIXTURES_DIR.glob("status-*.json")):
             with self.subTest(path=path.name):
                 event = map_payload(load_payload(path.name))
                 self.assertEqual(event.provider_name, "botmaker")

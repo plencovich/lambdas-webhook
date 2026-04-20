@@ -74,34 +74,34 @@ class FakePersistingRepository:
 
 class IncomingMapperTest(unittest.TestCase):
     def test_maps_simple_incoming_message(self):
-        event = map_payload(load_payload("entrante-01.json"))
+        event = map_payload(load_payload("incoming-01.json"))
 
         self.assertEqual(event.event_type, "incoming_message")
-        self.assertEqual(event.message.message_external_id, "7FY5UUKJ1LR2R63DZZ6X")
+        self.assertEqual(event.message.message_external_id, "51FH77RLXF1BZIEHOLMQ")
         self.assertEqual(event.conversation.conversation_external_id, event.conversation_external_id)
-        self.assertEqual(event.conversation_external_id, "BGIX5QLJUNUI16XMKDYM_2026-04-17T18:13:17.281Z")
-        self.assertEqual(event.customer.customer_external_id, "BGIX5QLJUNUI16XMKDYM")
-        self.assertEqual(event.customer.contact_external_id, "5492477669952")
+        self.assertEqual(event.conversation_external_id, "NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z")
+        self.assertEqual(event.customer.customer_external_id, "NWHAYJVORB4TSWTBY3PQ")
+        self.assertEqual(event.customer.contact_external_id, "5493584232743")
         self.assertEqual(event.customer.business_channel_address, "5491171017096")
-        self.assertEqual(event.customer.customer_first_name, "Diego")
-        self.assertEqual(event.customer.customer_last_name, "Plenco")
+        self.assertEqual(event.customer.customer_first_name, "Hanan")
+        self.assertEqual(event.customer.customer_last_name, "Pacha Itinerante")
         self.assertEqual(event.message.direction, "inbound")
         self.assertEqual(event.message.sender_type, "customer")
-        self.assertEqual(event.message.message_text, "hola")
+        self.assertEqual(event.message.message_text, "Buenas tardes")
         self.assertFalse(event.message.is_button)
         self.assertTrue(event.message.is_customer_message)
-        self.assertEqual(event.message.queue_name, "siniestros-1")
+        self.assertEqual(event.message.queue_name, "Seguros-1")
 
     def test_maps_button_message(self):
-        event = map_payload(load_payload("entrante-02.json"))
+        event = map_payload(load_payload("incoming-02.json"))
 
-        self.assertEqual(event.message.message_external_id, "COLURGFQPJFJKOH651LS")
+        self.assertEqual(event.message.message_external_id, "ZMQUBHQQFPXBE53LQF5Q")
         self.assertTrue(event.message.is_button)
         self.assertEqual(event.message.button_label, "Cotizar")
         self.assertEqual(event.message.message_text, "Cotizar")
 
     def test_external_event_key_uses_message_id_for_idempotency(self):
-        payload = load_payload("entrante-01.json")
+        payload = load_payload("incoming-01.json")
         event = map_payload(payload)
 
         retried_payload = {**payload, "message": "texto cambiado por retry defectuoso"}
@@ -110,7 +110,7 @@ class IncomingMapperTest(unittest.TestCase):
         self.assertEqual(event.external_event_key, retried_event.external_event_key)
         self.assertEqual(
             event.external_event_key,
-            "incoming:v1:botmaker:message:7FY5UUKJ1LR2R63DZZ6X",
+            "incoming:v1:botmaker:message:51FH77RLXF1BZIEHOLMQ",
         )
 
     def test_service_ignores_duplicate_raw_event_without_normalizing_again(self):
@@ -119,7 +119,7 @@ class IncomingMapperTest(unittest.TestCase):
         response = service.process(
             "incoming",
             {
-                "body": json.dumps(load_payload("entrante-01.json")),
+                "body": json.dumps(load_payload("incoming-01.json")),
                 "requestContext": {"requestId": "local-test"},
             },
         )
@@ -134,7 +134,7 @@ class IncomingMapperTest(unittest.TestCase):
         response = service.process(
             "incoming",
             {
-                "body": json.dumps(load_payload("entrante-02.json")),
+                "body": json.dumps(load_payload("incoming-02.json")),
                 "requestContext": {"requestId": "local-test"},
             },
         )
@@ -146,23 +146,23 @@ class IncomingMapperTest(unittest.TestCase):
             {"customer_id": 10, "operator_id": None, "conversation_id": 20, "message_id": 30},
         )
         self.assertEqual(repository.saved_raw_event_id, 456)
-        self.assertEqual(repository.saved_event.customer.customer_external_id, "BGIX5QLJUNUI16XMKDYM")
+        self.assertEqual(repository.saved_event.customer.customer_external_id, "NWHAYJVORB4TSWTBY3PQ")
         self.assertEqual(
             repository.saved_event.conversation.conversation_external_id,
-            "BGIX5QLJUNUI16XMKDYM_2026-04-17T18:13:17.281Z",
+            "NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z",
         )
-        self.assertEqual(repository.saved_event.message.message_external_id, "COLURGFQPJFJKOH651LS")
+        self.assertEqual(repository.saved_event.message.message_external_id, "ZMQUBHQQFPXBE53LQF5Q")
 
     def test_all_real_fixtures_are_mappable(self):
-        for path in sorted(FIXTURES_DIR.glob("entrante-*.json")):
+        for path in sorted(FIXTURES_DIR.glob("incoming-*.json")):
             with self.subTest(path=path.name):
                 event = map_payload(load_payload(path.name))
                 self.assertEqual(event.provider_name, "botmaker")
                 self.assertEqual(event.source_endpoint, "incoming")
                 self.assertEqual(event.event_type, "incoming_message")
                 self.assertTrue(event.external_event_key.startswith("incoming:v1:botmaker:message:"))
-                self.assertEqual(event.customer.customer_external_id, "BGIX5QLJUNUI16XMKDYM")
-                self.assertEqual(event.conversation.current_queue_name, "siniestros-1")
+                self.assertEqual(event.customer.customer_external_id, "NWHAYJVORB4TSWTBY3PQ")
+                self.assertEqual(event.conversation.current_queue_name, "Seguros-1")
                 self.assertIsNotNone(event.message.message_at)
 
 
