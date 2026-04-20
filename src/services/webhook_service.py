@@ -1,8 +1,10 @@
 from collections.abc import Mapping
 from typing import Any
 
+from mappers.incoming_mapper import IncomingPayloadMapper
 from mappers.status_mapper import StatusPayloadMapper
 from mappers.webhook_mapper import WebhookMapper
+from models.incoming_event import IncomingWebhookEvent
 from models.webhook_event import WebhookEnvelope
 from repositories.webhook_repository import WebhookRepository
 from utils.exceptions import DatabaseError
@@ -17,10 +19,12 @@ class WebhookIngestionService:
         self,
         mapper: WebhookMapper | None = None,
         status_mapper: StatusPayloadMapper | None = None,
+        incoming_mapper: IncomingPayloadMapper | None = None,
         repository: WebhookRepository | None = None,
     ) -> None:
         self._mapper = mapper or WebhookMapper()
         self._status_mapper = status_mapper or StatusPayloadMapper()
+        self._incoming_mapper = incoming_mapper or IncomingPayloadMapper()
         self._repository = repository or WebhookRepository()
 
     def process(
@@ -34,10 +38,19 @@ class WebhookIngestionService:
             extra={"source_endpoint": source_endpoint},
         )
         payload = parse_json_body(event)
+        logger.info(
+            "Webhook payload parsed",
+            extra={
+                "source_endpoint": source_endpoint,
+                "payload_field_count": len(payload),
+            },
+        )
         envelope = self._mapper.to_envelope(source_endpoint, event, payload, context)
 
         if source_endpoint == "status":
             return self._process_status(envelope)
+        if source_endpoint == "incoming":
+            return self._process_incoming(envelope)
 
         self._repository.save_raw_event(envelope)
 
@@ -138,3 +151,102 @@ class WebhookIngestionService:
             "raw_event_id": raw_result.raw_event_id,
             "entities": entity_ids,
         }
+
+    def _process_incoming(self, envelope: WebhookEnvelope) -> dict[str, Any]:
+        incoming_event = self._incoming_mapper.to_incoming_event(envelope)
+
+        logger.info(
+            "Incoming webhook mapped",
+            extra={
+                "request_id": incoming_event.request_id,
+                "source_endpoint": incoming_event.source_endpoint,
+                "event_type": incoming_event.event_type,
+                "external_event_key": incoming_event.external_event_key,
+                **incoming_event.trace_context,
+            },
+        )
+
+        raw_result = self._repository.register_incoming_raw_event(incoming_event)
+        if raw_result.duplicate:
+            logger.info(
+                "Duplicate incoming webhook ignored",
+                extra={
+                    "request_id": incoming_event.request_id,
+                    "source_endpoint": incoming_event.source_endpoint,
+                    "external_event_key": incoming_event.external_event_key,
+                    "raw_event_id": raw_result.raw_event_id,
+                    "raw_processing_status": raw_result.processing_status,
+                    **incoming_event.trace_context,
+                },
+            )
+            return _incoming_response(
+                incoming_event,
+                status="duplicate_ignored",
+                raw_event_id=raw_result.raw_event_id,
+            )
+
+        if raw_result.raw_event_id is None:
+            raise DatabaseError("Raw incoming webhook event was not persisted")
+
+        try:
+            entity_ids = self._repository.save_incoming_event(
+                incoming_event,
+                raw_result.raw_event_id,
+            )
+        except Exception as exc:
+            try:
+                self._repository.mark_raw_failed(raw_result.raw_event_id, str(exc))
+            except Exception as mark_error:
+                logger.error(
+                    "Could not mark raw incoming webhook as failed",
+                    extra={
+                        "request_id": incoming_event.request_id,
+                        "external_event_key": incoming_event.external_event_key,
+                        "raw_event_id": raw_result.raw_event_id,
+                        "mark_error_type": mark_error.__class__.__name__,
+                    },
+                )
+            raise
+
+        logger.info(
+            "Incoming webhook processed",
+            extra={
+                "request_id": incoming_event.request_id,
+                "source_endpoint": incoming_event.source_endpoint,
+                "external_event_key": incoming_event.external_event_key,
+                "raw_event_id": raw_result.raw_event_id,
+                **incoming_event.trace_context,
+                **entity_ids,
+            },
+        )
+
+        return _incoming_response(
+            incoming_event,
+            status="processed",
+            raw_event_id=raw_result.raw_event_id,
+            entities=entity_ids,
+        )
+
+
+def _incoming_response(
+    event: IncomingWebhookEvent,
+    *,
+    status: str,
+    raw_event_id: int | None,
+    entities: dict[str, int | None] | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "status": status,
+        "provider": event.provider_name,
+        "endpoint": event.source_endpoint,
+        "event_type": event.event_type,
+        "request_id": event.request_id,
+        "external_event_key": event.external_event_key,
+        "message_external_id": event.message_external_id,
+        "conversation_external_id": event.conversation_external_id,
+        "customer_external_id": event.customer_external_id,
+        "raw_event_id": raw_event_id,
+    }
+    if entities is not None:
+        response["entities"] = entities
+    return response
