@@ -72,6 +72,15 @@ class FakePersistingRepository:
         }
 
 
+class FakeFailedDuplicateRepository(FakePersistingRepository):
+    def register_incoming_raw_event(self, event):
+        return type(
+            "RawResult",
+            (),
+            {"raw_event_id": 789, "duplicate": True, "processing_status": "failed"},
+        )()
+
+
 class IncomingMapperTest(unittest.TestCase):
     def test_maps_simple_incoming_message(self):
         event = map_payload(load_payload("incoming-01.json"))
@@ -153,7 +162,26 @@ class IncomingMapperTest(unittest.TestCase):
         )
         self.assertEqual(repository.saved_event.message.message_external_id, "ZMQUBHQQFPXBE53LQF5Q")
 
+    def test_service_retries_failed_duplicate_raw_event(self):
+        repository = FakeFailedDuplicateRepository()
+        service = WebhookIngestionService(repository=repository)
+        response = service.process(
+            "incoming",
+            {
+                "body": json.dumps(load_payload("incoming-01.json")),
+                "requestContext": {"requestId": "local-test"},
+            },
+        )
+
+        self.assertEqual(response["status"], "processed")
+        self.assertEqual(response["raw_event_id"], 789)
+        self.assertEqual(repository.saved_raw_event_id, 789)
+        self.assertEqual(repository.saved_event.message.message_external_id, "51FH77RLXF1BZIEHOLMQ")
+
     def test_all_real_fixtures_are_mappable(self):
+        seen_keys = set()
+        duplicate_keys = set()
+
         for path in sorted(FIXTURES_DIR.glob("incoming-*.json")):
             with self.subTest(path=path.name):
                 event = map_payload(load_payload(path.name))
@@ -164,6 +192,12 @@ class IncomingMapperTest(unittest.TestCase):
                 self.assertEqual(event.customer.customer_external_id, "NWHAYJVORB4TSWTBY3PQ")
                 self.assertEqual(event.conversation.current_queue_name, "Seguros-1")
                 self.assertIsNotNone(event.message.message_at)
+
+                if event.external_event_key in seen_keys:
+                    duplicate_keys.add(event.external_event_key)
+                seen_keys.add(event.external_event_key)
+
+        self.assertEqual(duplicate_keys, {"incoming:v1:botmaker:message:PB1T5ZDRN8DPQGRY1UEY"})
 
 
 if __name__ == "__main__":

@@ -72,6 +72,15 @@ class FakePersistingRepository:
         }
 
 
+class FakeFailedDuplicateRepository(FakePersistingRepository):
+    def register_outgoing_raw_event(self, event):
+        return type(
+            "RawResult",
+            (),
+            {"raw_event_id": 789, "duplicate": True, "processing_status": "failed"},
+        )()
+
+
 class OutgoingMapperTest(unittest.TestCase):
     def test_maps_operator_text_message(self):
         event = map_payload(load_payload("outgoing-01.json"))
@@ -155,6 +164,22 @@ class OutgoingMapperTest(unittest.TestCase):
         self.assertEqual(repository.saved_event.operator.operator_name, "Sofia Jacobi")
         self.assertEqual(repository.saved_event.message.direction, "outbound")
         self.assertEqual(repository.saved_event.message.sender_type, "operator")
+
+    def test_service_retries_failed_duplicate_raw_event(self):
+        repository = FakeFailedDuplicateRepository()
+        service = WebhookIngestionService(repository=repository)
+        response = service.process(
+            "outgoing",
+            {
+                "body": json.dumps(load_payload("outgoing-01.json")),
+                "requestContext": {"requestId": "local-test"},
+            },
+        )
+
+        self.assertEqual(response["status"], "processed")
+        self.assertEqual(response["raw_event_id"], 789)
+        self.assertEqual(repository.saved_raw_event_id, 789)
+        self.assertEqual(repository.saved_event.message.message_external_id, "CK7YUGAQQ1NBRBJQNB22")
 
     def test_all_real_fixtures_are_mappable(self):
         seen_keys = set()
