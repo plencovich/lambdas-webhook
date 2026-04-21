@@ -328,7 +328,7 @@ def _context(
     return StatusContext(
         provider_name=provider_name,
         snapshot_at=snapshot_at,
-        product=_first_text(payload, "product", "PRODUCT", "Producto", "AP_Actividad"),
+        product=_first_text(payload, "product", "PRODUCT", "Producto"),
         topic=_first_text(payload, "topic", "TOPIC", "Tema"),
         subtopic=_first_text(payload, "subtopic", "SUBTOPIC", "Subtema"),
         quote_external_id=_first_text(payload, "AP_QuoteId", "quoteId", "quote_external_id"),

@@ -167,7 +167,7 @@ Fixtures base: `status-01.json` a `status-22.json`. Todos los fixtures tienen `S
 - Campos: `sessionId`/`LAST_MESSAGE.sessionId`, customer FK, canal, canal negocio, inicio, first user/bot/human response, last message, queue, bot muted, pending messages, status, topic/subtopic/product.
 - Columnas sin uso real en fixtures: `journey_stage`, `handoff_reason`, `resolution_type`, `closed_by`, `closed_at`. `resolved_flag` solo se alimentaria si llega `IssueResuelto`, no presente en fixtures actuales.
 - Regla: upsert por `(provider_name, conversation_external_id)`. First timestamps usan menor fecha; last timestamp usa mayor fecha; `/incoming` y `/outgoing` no pisan `status_current`.
-- Evaluacion: correcta y conservadora.
+- Evaluacion: correcta y conservadora. Con datos reales actuales, `product` no debe llenarse desde `AP_Actividad`; esa variable describe actividad/oficio y no producto estable.
 
 ### `messages`
 
@@ -188,10 +188,10 @@ Fixtures base: `status-01.json` a `status-22.json`. Todos los fixtures tienen `S
 ### `conversation_contexts`
 
 - Endpoints: `status`.
-- Campos: product/topic/subtopic si llegan; quote/coverage/precio si llegan; `RespuestaAccionCompleta`; contexto dinamico por prefijos.
-- Columnas subutilizadas en fixtures actuales: quote/coverage/precio/topic/product/subtopic no aparecen en los fixtures observados.
+- Campos: product/topic/subtopic si llegan como claves dedicadas reales; `activity_name` desde `ActividadName` o `AP_Actividad`; quote/coverage/precio si llegan; `RespuestaAccionCompleta`; contexto dinamico por prefijos.
+- Columnas subutilizadas en fixtures actuales: quote/coverage/precio/topic/product/subtopic no aparecen en los fixtures observados. `activity_name` si aparece y hoy es la mejor columna estructurada para actividad/motivo operativo.
 - Regla: append historical context por snapshot. Variables sensibles obvias excluidas de `context_json`; el raw conserva payload completo.
-- Evaluacion: correcta y extensible.
+- Evaluacion: correcta y extensible. `BusquedaActividad` queda en `context_json`; no debe promoverse a `topic`, `subtopic` ni `product` porque en datos reales opera como flag/binario, no como clasificacion de negocio.
 
 ### `conversation_metrics`
 
@@ -222,9 +222,9 @@ Fixtures base: `status-01.json` a `status-22.json`. Todos los fixtures tienen `S
 - Campos top-level detectados: `STATUS`, `STATUS_CHANGE_TIME`, `_id_`, `LAST_MESSAGE`, `PLATFORM_CONTACT_ID`, `CHAT_PLATFORM_ID`, `chatChannelId`, `WHATSAPP_NUMBER`, `CREATION_TIME`, `FIRST_NAME`, `LAST_NAME`, `country`, `locale`, `gender`, `BOT_MUTED`, `PENDING_MSGS`, `LAST_SEEN`, `USER_LAST_MSG_RECEIVED`, `USER_LAST_MSG_READ`, `EXECUTED_INTENTS`, `QUEUE`, `Last action author`, `RespuestaAccionCompleta`, `PreguntarAccionCompleta`, `BUSINESS_ID`, `LAST_MESSAGE_CREATION_TIME`.
 - Campos nested en `LAST_MESSAGE`: `_id_`, `date`, `chatPlatform`, `contactId`, `customerId`, `sessionId`, `sessionCreationTime`, `from`, `fromName`, `message`, `operatorId`, `operatorName`, `operatorEmail`, `queue`, `hasAttachment`, `file`, `audio`.
 - Va a snapshot: status, muted, pending, seen/read/received, action author, queue, intents, ultimo mensaje, operador.
-- Va a conversation: estado actual, bot muted, pending, first/last timestamps, queue, topic/product si existen.
+- Va a conversation: estado actual, bot muted, pending, first/last timestamps, queue, topic/subtopic/product solo si existen como claves dedicadas reales.
 - Va a message: ultimo mensaje y delivery status.
-- Va a context_json: variables dinamicas de negocio sin columna especifica.
+- Va a context_json: variables dinamicas de negocio sin columna especifica, incluyendo `BusquedaActividad` y otras claves `AP_*`.
 - Va solo a raw: `BUSINESS_ID`, payload completo, campos no promovidos.
 - Evaluacion: corregido para `LAST_MESSAGE.file`.
 
@@ -255,6 +255,13 @@ Fixtures base: `status-01.json` a `status-22.json`. Todos los fixtures tienen `S
   - Solo `/status`.
   - Entran claves con prefijos `AP_`, `Actividad`, `BusquedaActividad`, `DeathAmount`, `IssueResuelto`, `Preguntar`, `Respuesta`, `typeDate`.
   - Se excluyen claves sensibles conocidas: `AP_MailTomador`, `AP_TipoDocumentoTomador`.
+
+- `activity_name` / `motivo_consulta_aprox` / `product`:
+  - `activity_name` se llena desde `ActividadName`; si no existe, usa `AP_Actividad`.
+  - `product` se llena solo desde claves dedicadas de producto: `product`, `PRODUCT`, `Producto`.
+  - `AP_Actividad` no debe poblar `product`.
+  - `BusquedaActividad` queda solo en `context_json` como flag operativo.
+  - La capa analitica puede derivar `motivo_consulta_aprox` a partir de `subtopic`, `topic`, `activity_name` y, en ultimo termino, `product`.
 
 - Raw only:
   - Payload completo siempre queda en `webhook_events_raw.raw_payload_json`.
@@ -313,8 +320,13 @@ Hallazgos:
    - `operators.operator_role`.
    - `messages.intent_name`.
    - `conversations.journey_stage`, `handoff_reason`, `resolution_type`, `closed_by`, `closed_at`.
-   - Varias columnas de quote/product/context solo si aparecen variables `AP_*` futuras.
+   - Varias columnas de quote/topic/subtopic/product solo si aparecen variables dedicadas reales; `AP_Actividad` queda en `activity_name`.
    - Accion: mantener sin inventar mapeos.
+
+6. `product` estaba sobrecargado con actividad en datos reales.
+   - Impacto: medio. Distorsiona breakdowns analiticos y mezcla producto con oficio/motivo.
+   - Evidencia: `AP_Actividad` trae valores como `Fotografía`, `Trabajo en altura 30 metros`, `Construcciones`.
+   - Accion: corregido en `StatusPayloadMapper`; `AP_Actividad` ahora alimenta `activity_name` y no `product`. La capa analitica expone `motivo_consulta_aprox` por separado. Para datos historicos ya cargados, usar `database/query_packs/20260421_activity_product_reconciliation.sql`.
 
 ## Tests De Contrato
 
