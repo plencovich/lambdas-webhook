@@ -50,9 +50,9 @@ Lectura funcional clave:
 
 ### Lo Que Ya Sirve Para Analitica
 
-- `conversations` sirve para dashboards de estado actual por canal, cola, status, bot muted, pending messages, topic/subtopic/product si llegan.
+- `conversations` sirve para dashboards de estado actual por canal, cola, status, bot muted, pending messages y dimensiones declaradas si llegan.
 - `conversation_snapshots` sirve para evolucion temporal de estados, pending messages, bot muted e intents.
-- `conversation_contexts` sirve para contexto de negocio, topic/product/subtopic, quotes y variables dinamicas.
+- `conversation_contexts` sirve para contexto de negocio, activity/topic/product/subtopic, quotes y variables dinamicas.
 - `messages` sirve para volumen por actor, operador, cola, adjuntos y tiempos de primera respuesta cuando el timeline este completo.
 - `webhook_events_raw` sirve para health de ingesta y auditoria de errores/reintentos.
 
@@ -135,6 +135,17 @@ Crear catalogos de topic/subtopic/product/handoff antes de tener una taxonomia f
 
 MySQL 8 no soporta `CREATE INDEX IF NOT EXISTS`. La migracion debe correrse una vez por ambiente. Si se necesita rerun idempotente, se deberia envolver con un runner que consulte `information_schema.statistics`.
 
+### Riesgo 6: `product` Sobrecargado Con Actividad
+
+Con datos reales observados, `AP_Actividad` trae valores como:
+
+- `Fotografía`
+- `Trabajo en altura 30 metros`
+- `Construcciones`
+- `Albañil y pintor`
+
+Eso no se comporta como `product` estable sino como actividad/oficio/motivo operativo. Por eso la recomendacion es no seguir poblando `product` desde `AP_Actividad`.
+
 ## Recomendaciones Previas A Poblar Datos
 
 ### Cambios Recomendados De Base De Datos
@@ -142,6 +153,7 @@ MySQL 8 no soporta `CREATE INDEX IF NOT EXISTS`. La migracion debe correrse una 
 Bloqueantes antes de dashboards:
 
 - Aplicar `database/migrations/20260420_grafana_analytics_layer.sql` para crear indices y vistas.
+- En ambientes ya migrados, usar `database/migrations/20260421_grafana_views_refresh.sql` cuando cambie la definicion de una view o aparezcan columnas derivadas nuevas como `motivo_consulta_aprox`.
 
 No bloqueantes:
 
@@ -165,6 +177,9 @@ Recomendados para confiabilidad analitica:
 - Mantener `/incoming` y `/outgoing` activos para completar `messages`.
 - No poblar `conversation_metrics` en lambdas transaccionales de webhook.
 - Cuando aparezcan payloads reales de cierre/resolucion, mapearlos explicitamente a `conversations.closed_at`, `closed_by`, `resolved_flag`, `resolution_type` y `handoff_reason`.
+- Tratar `AP_Actividad` como `activity_name`, no como `product`.
+- Exponer `motivo_consulta_aprox` en la capa analitica como campo derivado de `subtopic/topic/activity_name/product`, claramente marcado como aproximado.
+- Si ya existen cargas historicas donde `product` absorbio `AP_Actividad`, reconciliarlas con `database/query_packs/20260421_activity_product_reconciliation.sql` antes de publicar breakdowns analiticos.
 - Si se adopta una tabla puente de trazabilidad raw-normalized, agregar inserciones en el repositorio dentro de la misma transaccion.
 
 ### Opcional Vs Bloqueante
@@ -172,6 +187,7 @@ Recomendados para confiabilidad analitica:
 Bloqueante para Grafana inicial:
 
 - Vistas e indices de la migracion.
+- Refresh de views en ambientes existentes si la base ya tenia una version anterior de `vw_grafana_conversations_current` o de las vistas dependientes.
 
 Opcional:
 
@@ -217,6 +233,7 @@ Marcadas con `_aprox` en vistas o documentadas como `observed`:
 - `handoff_to_human_aprox`: presencia de humano observada, no motivo formal de handoff.
 - `time_to_first_bot_response_seconds_aprox`: usa `conversation_started_at` si falta `first_user_message_at`.
 - `time_to_first_human_response_seconds_aprox`: usa `conversation_started_at` si falta `first_user_message_at`.
+- `motivo_consulta_aprox`: hoy se deriva de `subtopic/topic/activity_name/product`; con los datos actuales suele caer en `activity_name`.
 - Conteos desde `messages` si solo se pobla `/status`: son mensajes observados, no total real.
 - `interaction_mode_observed` si no esta completo el timeline.
 
@@ -260,7 +277,7 @@ Views principales:
 - `vw_grafana_operator_volume_from_messages`
 - `vw_grafana_resolution_current`
 - `vw_grafana_handoff_to_human_aprox`
-- `vw_grafana_topic_product_breakdown_current`
+- `vw_grafana_activity_motive_breakdown_current`
 
 Estrategia:
 
@@ -295,19 +312,45 @@ No incluye:
 - inserts/updates de `conversation_metrics`;
 - alteraciones de columnas funcionales sin fuente real.
 
-## Ejemplos De Consumo En Grafana
+## Ejemplos De Consumo
+
+Nota de uso:
+
+- Version `Grafana`: usa macros como `$__timeFilter`, `$__timeFrom()` y `$__timeTo()`. Solo funcionan dentro de Grafana.
+- Version `MySQL`: reemplaza las macros por fechas literales o variables de sesion. Sirve para MySQL Workbench, DBeaver o consola.
 
 ### Conversaciones Por Dia / Canal / Estado / Cola
 
+Version Grafana:
+
 ```sql
 SELECT
-    conversation_date,
+    TIMESTAMP(conversation_date) AS time,
     channel,
     status_current,
     queue_name,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_conversations_daily
-WHERE conversation_date BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(TIMESTAMP(conversation_date))
+GROUP BY
+    conversation_date,
+    channel,
+    status_current,
+    queue_name
+ORDER BY conversation_date;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    TIMESTAMP(conversation_date) AS time,
+    channel,
+    status_current,
+    queue_name,
+    SUM(conversation_count) AS conversations
+FROM vw_grafana_conversations_daily
+WHERE conversation_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
 GROUP BY
     conversation_date,
     channel,
@@ -330,15 +373,35 @@ ORDER BY conversation_count DESC;
 
 ### Evolucion Temporal De Snapshots
 
+Version Grafana:
+
 ```sql
 SELECT
-    snapshot_date,
+    TIMESTAMP(snapshot_date) AS time,
     channel,
     status_current,
     SUM(snapshot_count) AS snapshots,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_snapshots_daily
-WHERE snapshot_date BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(TIMESTAMP(snapshot_date))
+GROUP BY
+    snapshot_date,
+    channel,
+    status_current
+ORDER BY snapshot_date;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    TIMESTAMP(snapshot_date) AS time,
+    channel,
+    status_current,
+    SUM(snapshot_count) AS snapshots,
+    SUM(conversation_count) AS conversations
+FROM vw_grafana_snapshots_daily
+WHERE snapshot_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
 GROUP BY
     snapshot_date,
     channel,
@@ -348,19 +411,37 @@ ORDER BY snapshot_date;
 
 ### Ranking De Intents
 
+Version Grafana:
+
 ```sql
 SELECT
     intent_name,
     SUM(intent_occurrence_count) AS occurrences,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_intents_daily
-WHERE intent_date BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(TIMESTAMP(intent_date))
+GROUP BY intent_name
+ORDER BY occurrences DESC
+LIMIT 20;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    intent_name,
+    SUM(intent_occurrence_count) AS occurrences,
+    SUM(conversation_count) AS conversations
+FROM vw_grafana_intents_daily
+WHERE intent_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
 GROUP BY intent_name
 ORDER BY occurrences DESC
 LIMIT 20;
 ```
 
 ### Conversaciones Con Handoff Humano Aproximado
+
+Version Grafana:
 
 ```sql
 SELECT
@@ -372,21 +453,40 @@ SELECT
     first_human_response_at,
     handoff_detection_basis_aprox
 FROM vw_grafana_handoff_to_human_aprox
-WHERE conversation_started_at BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(COALESCE(conversation_started_at, first_human_response_at))
+ORDER BY first_human_response_at DESC;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    conversation_external_id,
+    channel,
+    current_queue_name,
+    topic,
+    subtopic,
+    first_human_response_at,
+    handoff_detection_basis_aprox
+FROM vw_grafana_handoff_to_human_aprox
+WHERE COALESCE(conversation_started_at, first_human_response_at)
+      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-21 23:59:59')
 ORDER BY first_human_response_at DESC;
 ```
 
 ### Volumen Por Operador
 
+Version Grafana:
+
 ```sql
 SELECT
-    message_date,
+    TIMESTAMP(message_date) AS time,
     operator_name,
     operator_email,
     SUM(outbound_message_count) AS outbound_messages,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_operator_volume_from_messages
-WHERE message_date BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(TIMESTAMP(message_date))
 GROUP BY
     message_date,
     operator_name,
@@ -394,18 +494,40 @@ GROUP BY
 ORDER BY message_date, outbound_messages DESC;
 ```
 
-### Breakdown Por Topic / Subtopic / Product
+Version MySQL:
 
 ```sql
 SELECT
+    TIMESTAMP(message_date) AS time,
+    operator_name,
+    operator_email,
+    SUM(outbound_message_count) AS outbound_messages,
+    SUM(conversation_count) AS conversations
+FROM vw_grafana_operator_volume_from_messages
+WHERE message_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+GROUP BY
+    message_date,
+    operator_name,
+    operator_email
+ORDER BY message_date, outbound_messages DESC;
+```
+
+### Breakdown Por Activity / Motivo / Product
+
+```sql
+SELECT
+    activity_name,
+    motivo_consulta_aprox,
     topic,
     subtopic,
     product,
     SUM(conversation_count) AS conversations,
     SUM(handoff_to_human_count_aprox) AS handoffs_aprox,
     AVG(avg_time_to_first_human_response_seconds) AS avg_first_human_response_seconds
-FROM vw_grafana_topic_product_breakdown_current
+FROM vw_grafana_activity_motive_breakdown_current
 GROUP BY
+    activity_name,
+    motivo_consulta_aprox,
     topic,
     subtopic,
     product
@@ -413,6 +535,8 @@ ORDER BY conversations DESC;
 ```
 
 ### Tiempo De Primera Respuesta
+
+Version Grafana:
 
 ```sql
 SELECT
@@ -423,7 +547,25 @@ SELECT
     AVG(time_to_first_bot_response_seconds_aprox) AS avg_first_bot_response_seconds_aprox,
     AVG(time_to_first_human_response_seconds_aprox) AS avg_first_human_response_seconds_aprox
 FROM vw_grafana_conversations_current
-WHERE conversation_started_at BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(COALESCE(conversation_started_at, last_message_at))
+GROUP BY
+    channel,
+    current_queue_name;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    channel,
+    current_queue_name,
+    AVG(time_to_first_bot_response_seconds) AS avg_first_bot_response_seconds,
+    AVG(time_to_first_human_response_seconds) AS avg_first_human_response_seconds,
+    AVG(time_to_first_bot_response_seconds_aprox) AS avg_first_bot_response_seconds_aprox,
+    AVG(time_to_first_human_response_seconds_aprox) AS avg_first_human_response_seconds_aprox
+FROM vw_grafana_conversations_current
+WHERE COALESCE(conversation_started_at, last_message_at)
+      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-21 23:59:59')
 GROUP BY
     channel,
     current_queue_name;
@@ -431,14 +573,33 @@ GROUP BY
 
 ### Salud De Ingesta
 
+Version Grafana:
+
 ```sql
 SELECT
-    event_date,
+    TIMESTAMP(event_date) AS time,
     source_endpoint,
     processing_status,
     SUM(event_count) AS events
 FROM vw_grafana_raw_ingestion_health_daily
-WHERE event_date BETWEEN $__timeFrom() AND $__timeTo()
+WHERE $__timeFilter(TIMESTAMP(event_date))
+GROUP BY
+    event_date,
+    source_endpoint,
+    processing_status
+ORDER BY event_date;
+```
+
+Version MySQL:
+
+```sql
+SELECT
+    TIMESTAMP(event_date) AS time,
+    source_endpoint,
+    processing_status,
+    SUM(event_count) AS events
+FROM vw_grafana_raw_ingestion_health_daily
+WHERE event_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
 GROUP BY
     event_date,
     source_endpoint,

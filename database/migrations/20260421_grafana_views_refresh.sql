@@ -1,116 +1,27 @@
 -- =========================================================
--- Grafana analytics read layer
+-- Grafana analytics view refresh
 -- Target: MySQL 8.x / AWS RDS
 --
 -- Purpose:
---   Add query-oriented indexes and views for Grafana without
---   materializing derived metrics or mutating normalized webhook data.
+--   Refresh Grafana views in environments where the base migration
+--   was already applied and only the view definitions need to be
+--   synchronized.
+--
+-- When to use:
+--   - Unknown column errors in Grafana analytic views
+--   - New derived columns were added to vw_grafana_conversations_current
+--   - New dependent views were added after the initial migration
 --
 -- Notes:
---   - Run once after database/init_db.sql.
---   - MySQL 8 does not support CREATE INDEX IF NOT EXISTS.
---   - Views with *_aprox expose intentionally approximate metrics.
---   - Views with *_from_messages become exact only when /incoming and
---     /outgoing message ingestion is complete and trusted.
+--   - This script does not touch indexes.
+--   - Run after database/init_db.sql and after the base analytic
+--     migration if the indexes already exist.
 -- =========================================================
 
 SET NAMES utf8mb4;
 
 -- =========================================================
--- 1) Dashboard-oriented indexes
--- =========================================================
-
-ALTER TABLE webhook_events_raw
-    ADD INDEX idx_raw_endpoint_status_received (
-        source_endpoint,
-        processing_status,
-        received_at
-    );
-
-ALTER TABLE conversations
-    ADD INDEX idx_conversations_channel_status_queue_last (
-        channel,
-        status_current,
-        current_queue_name,
-        last_message_at
-    ),
-    ADD INDEX idx_conversations_resolved_closed (
-        resolved_flag,
-        closed_at
-    ),
-    ADD INDEX idx_conversations_first_human_response_at (
-        first_human_response_at
-    ),
-    ADD INDEX idx_conversations_first_bot_response_at (
-        first_bot_response_at
-    );
-
-ALTER TABLE messages
-    ADD INDEX idx_messages_conversation_sender_at (
-        conversation_id,
-        sender_type,
-        message_at
-    ),
-    ADD INDEX idx_messages_operator_at (
-        operator_id,
-        message_at
-    ),
-    ADD INDEX idx_messages_queue_at (
-        queue_name,
-        message_at
-    ),
-    ADD INDEX idx_messages_delivery_status_at (
-        delivery_status,
-        delivery_status_at
-    );
-
-ALTER TABLE conversation_snapshots
-    ADD INDEX idx_snapshots_conversation_at (
-        conversation_id,
-        snapshot_at
-    ),
-    ADD INDEX idx_snapshots_status_queue_at (
-        status_current,
-        queue_name,
-        snapshot_at
-    );
-
-ALTER TABLE conversation_contexts
-    ADD INDEX idx_contexts_conversation_at (
-        conversation_id,
-        snapshot_at
-    ),
-    ADD INDEX idx_contexts_topic_subtopic_product_at (
-        topic,
-        subtopic,
-        product,
-        snapshot_at
-    );
-
--- =========================================================
--- 2) Ingestion health
--- =========================================================
-
-CREATE OR REPLACE VIEW vw_grafana_raw_ingestion_health_daily AS
-SELECT
-    DATE(received_at) AS event_date,
-    provider_name,
-    source_endpoint,
-    event_type,
-    processing_status,
-    COUNT(*) AS event_count,
-    MIN(received_at) AS first_received_at,
-    MAX(received_at) AS last_received_at
-FROM webhook_events_raw
-GROUP BY
-    DATE(received_at),
-    provider_name,
-    source_endpoint,
-    event_type,
-    processing_status;
-
--- =========================================================
--- 3) Latest context per conversation
+-- 1) Latest context per conversation
 -- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_conversation_latest_context AS
@@ -156,10 +67,7 @@ FROM (
 WHERE ranked.row_num = 1;
 
 -- =========================================================
--- 4) Message-derived per-conversation metrics
---
--- Exact only when /incoming and /outgoing are active and complete.
--- With /status-only data, these counts represent observed messages.
+-- 2) Message-derived per-conversation metrics
 -- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_conversation_message_metrics_from_messages AS
@@ -194,11 +102,7 @@ FROM messages m
 GROUP BY m.conversation_id;
 
 -- =========================================================
--- 5) Current conversation view
---
--- Exact fields come from normalized current state.
--- *_aprox fields are intentionally approximate when complete message
--- history or explicit closure semantics are missing.
+-- 3) Current conversation view
 -- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_conversations_current AS
@@ -310,7 +214,7 @@ LEFT JOIN vw_grafana_conversation_message_metrics_from_messages mm
   ON mm.conversation_id = c.id;
 
 -- =========================================================
--- 6) Current conversation aggregates
+-- 4) Aggregates and dependent views
 -- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_conversations_daily AS
@@ -360,10 +264,6 @@ GROUP BY
     channel,
     COALESCE(current_queue_name, 'unknown'),
     COALESCE(status_current, 'unknown');
-
--- =========================================================
--- 7) Snapshot views
--- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_conversation_snapshots AS
 SELECT
@@ -418,10 +318,6 @@ GROUP BY
     COALESCE(status_current, 'unknown'),
     COALESCE(queue_name, 'unknown');
 
--- =========================================================
--- 8) Executed intents
--- =========================================================
-
 CREATE OR REPLACE VIEW vw_grafana_executed_intents AS
 SELECT
     cs.id AS snapshot_id,
@@ -465,12 +361,6 @@ GROUP BY
     channel,
     COALESCE(queue_name, 'unknown'),
     intent_name;
-
--- =========================================================
--- 9) Message volume views
---
--- Exact only when /incoming and /outgoing are active and complete.
--- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_messages_from_messages AS
 SELECT
@@ -552,10 +442,6 @@ GROUP BY
     COALESCE(operator_name, sender_name, 'unknown'),
     operator_email;
 
--- =========================================================
--- 10) Resolution and handoff views
--- =========================================================
-
 CREATE OR REPLACE VIEW vw_grafana_resolution_current AS
 SELECT
     conversation_id,
@@ -609,10 +495,6 @@ SELECT
     END AS handoff_detection_basis_aprox
 FROM vw_grafana_conversations_current
 WHERE handoff_to_human_aprox = 1;
-
--- =========================================================
--- 11) Topic / product breakdown
--- =========================================================
 
 CREATE OR REPLACE VIEW vw_grafana_activity_motive_breakdown_current AS
 SELECT
