@@ -127,6 +127,33 @@ class OutgoingMapperTest(unittest.TestCase):
         self.assertIn("storage.googleapis.com", event.message.attachment_url)
         self.assertIsNone(event.message.message_text)
 
+    def test_maps_image_attachment_without_text(self):
+        event = map_payload(
+            {
+                "WHATSAPP_NUMBER": "5491171017096",
+                "_id_": "image-only-message",
+                "chatPlatform": "whatsapp",
+                "contactId": "5493584232743",
+                "customerId": "NWHAYJVORB4TSWTBY3PQ",
+                "date": "2026-04-22T15:44:35.332193+00:00",
+                "from": "operator",
+                "fromName": "Vanesa Morales",
+                "hasAttachment": True,
+                "image": "https://storage.googleapis.com/storage.botmaker.com/public/res/mecubro/agents/example-image.jpg",
+                "operatorEmail": "vanesa.morales@mecubro.com",
+                "operatorId": "yucPtGbocIQnnJzTjinZpUtrEbq1",
+                "operatorName": "Vanesa Morales",
+                "queue": "Seguros-1",
+                "sessionCreationTime": "2026-04-17T18:37:29.922Z",
+                "sessionId": "NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z",
+            }
+        )
+
+        self.assertTrue(event.message.has_attachment)
+        self.assertEqual(event.message.attachment_type, "image")
+        self.assertIn("example-image.jpg", event.message.attachment_url)
+        self.assertIsNone(event.message.message_text)
+
     def test_service_ignores_duplicate_raw_event_without_normalizing_again(self):
         repository = FakeDuplicateRepository()
         service = WebhookIngestionService(repository=repository)

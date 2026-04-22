@@ -124,6 +124,7 @@ class OutgoingPayloadMapper:
                         "isButton",
                         "buttonName",
                         "hasAttachment",
+                        "image",
                         "audio",
                         "file",
                         "attachmentUrl",
@@ -296,12 +297,14 @@ def _sender_name(payload: Mapping[str, Any], sender_type: str | None) -> str | N
 
 
 def _attachment_url(payload: Mapping[str, Any]) -> str | None:
-    return _first_text(payload, "audio", "file", "attachmentUrl", "fileUrl", "mediaUrl")
+    return _first_text(payload, "image", "audio", "file", "attachmentUrl", "fileUrl", "mediaUrl")
 
 
 def _attachment_type(payload: Mapping[str, Any], attachment_url: str | None) -> str | None:
     if not attachment_url:
         return None
+    if _first_text(payload, "image"):
+        return "image"
     if _first_text(payload, "audio"):
         return "audio"
     if _first_text(payload, "file", "fileUrl"):
