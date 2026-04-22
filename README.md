@@ -1,320 +1,216 @@
 # Botmaker Webhook Ingestion
 
-Base serverless en Python con AWS SAM para recibir webhooks de Botmaker y
-persistirlos en AWS RDS MySQL.
+Base serverless en Python para recibir webhooks de Botmaker y persistirlos en Aurora MySQL RDS con trazabilidad consistente.
 
-## Arquitectura
+El proyecto expone tres endpoints HTTP con AWS SAM y API Gateway:
 
-El proyecto usa una arquitectura en capas simple para procesamiento tipo ETL:
+- `POST /incoming`: mensajes entrantes del customer.
+- `POST /outgoing`: mensajes salientes emitidos por operador o bot.
+- `POST /status`: snapshots y cambios de estado de la conversacion.
 
-```text
-API Gateway
--> Lambda handler
--> service
--> mapper
--> repository
--> RDS MySQL
-```
+El objetivo operativo es conservar cada webhook en crudo, normalizar las entidades principales de conversacion y mantener una base estable para auditoria, analitica y evolucion futura.
 
-La estructura evita una arquitectura hexagonal completa y mantiene separadas las
-responsabilidades principales:
+## Descripcion General
 
-```text
-src/
-  handlers/       Entrypoints Lambda por endpoint
-  services/       Orquestacion del flujo de ingesta
-  mappers/        Transformacion inicial de eventos
-  repositories/   Acceso futuro a RDS y base comun de persistencia
-  db/             Configuracion y conexion reutilizable
-  models/         Tipos simples del dominio tecnico
-  utils/          Config, logging, errores, HTTP y parsing
-layer/
-  requirements.txt
-events/
-tests/
-database/
-template.yaml
-samconfig.toml
-```
+La aplicacion esta implementada como tres Lambdas independientes, una por endpoint, para desacoplar flujos que comparten infraestructura pero no necesariamente las mismas reglas de negocio. Todas reutilizan una base comun para:
+
+- configuracion y variables de entorno
+- logging estructurado
+- parseo de eventos Lambda/API Gateway
+- manejo de errores HTTP
+- conexion a Aurora MySQL con PyMySQL
+- persistencia transaccional e idempotente
+
+La persistencia combina dos niveles:
+
+- persistencia raw en `webhook_events_raw`
+- persistencia normalizada en tablas de dominio como `customers`, `operators`, `conversations`, `messages`, `conversation_snapshots` y `conversation_contexts`
+
+La fuente de verdad del modelo relacional es [`database/init_db.sql`](database/init_db.sql).
 
 ## Endpoints
 
-El template SAM define tres funciones Lambda separadas, expuestas por API
-Gateway:
+| Endpoint | Handler | Evento procesado | Persistencia principal |
+| --- | --- | --- | --- |
+| `POST /incoming` | `handlers.incoming_handler.lambda_handler` | mensaje entrante de usuario/customer | `webhook_events_raw`, `customers`, `conversations`, `messages` |
+| `POST /outgoing` | `handlers.outgoing_handler.lambda_handler` | mensaje saliente de operador o bot | `webhook_events_raw`, `customers`, `operators`, `conversations`, `messages` |
+| `POST /status` | `handlers.status_handler.lambda_handler` | snapshot de estado conversacional y ultimo mensaje | `webhook_events_raw`, `customers`, `operators`, `conversations`, `messages`, `conversation_snapshots`, `conversation_contexts` |
 
-- `POST /incoming`
-- `POST /outgoing`
-- `POST /status`
+Notas de alcance confirmadas en codigo:
 
-Se eligio una Lambda por endpoint para mantener bajo acoplamiento entre flujos
-que pueden evolucionar con reglas, permisos, metricas y errores distintos. La
-logica compartida queda centralizada en services, mappers, repositories y utils.
+- `/incoming` normaliza mensajes inbound y actualiza customer/conversation sin escribir snapshots ni contextos.
+- `/outgoing` completa la linea de tiempo de mensajes salientes y crea o actualiza operador cuando corresponde.
+- `/status` agrega historial append-only de snapshots y contexto dinamico, y tambien puede complementar el ultimo mensaje y el estado de entrega.
 
-## Endpoint `POST /status`
+## Arquitectura
 
-`/status` recibe snapshots de estado de conversacion/contacto enviados por
-Botmaker. No se modela solo como delivery status de un mensaje: el payload se
-guarda completo en `webhook_events_raw` y luego se normaliza hacia:
+Arquitectura real implementada:
 
+```text
+API Gateway (regional)
+-> Lambda handler
+-> WebhookIngestionService
+-> mapper especifico por endpoint
+-> WebhookRepository
+-> Aurora MySQL RDS
+```
+
+Piezas principales:
+
+- `template.yaml`: define una API `AWS::Serverless::Api`, tres funciones `AWS::Serverless::Function`, un layer comun y configuracion opcional de VPC/security groups.
+- `src/handlers/`: entrypoints Lambda por endpoint.
+- `src/services/webhook_service.py`: orquesta parseo, mapeo, persistencia raw, reintentos y respuestas de negocio.
+- `src/mappers/`: transforma payloads Botmaker en modelos internos.
+- `src/repositories/webhook_repository.py`: ejecuta la persistencia normalizada e idempotente contra MySQL.
+- `src/db/`: resuelve configuracion de base y conexion reutilizable con PyMySQL.
+- `src/utils/`: configuracion, logging JSON, respuestas HTTP, parseo de payload y errores.
+- `layer/requirements.txt`: dependencias compartidas del layer; hoy contiene `PyMySQL==1.1.2`.
+
+## Flujo de Persistencia y Trazabilidad
+
+Flujo comun confirmado en `WebhookIngestionService` y `WebhookRepository`:
+
+1. La Lambda parsea el body JSON y arma un `WebhookEnvelope`.
+2. El mapper del endpoint construye un modelo tipado con `external_event_key`.
+3. Se inserta primero el payload completo en `webhook_events_raw`.
+4. Si el raw ya existe con estado `processed`, la Lambda responde `duplicate_ignored`.
+5. Si el raw ya existe con estado `failed`, se reintenta la normalizacion usando el mismo `raw_event_id`.
+6. Si el raw es nuevo, se normalizan entidades en una transaccion MySQL.
+7. El raw se marca `processed` o `failed` segun resultado.
+
+Consideraciones implementadas hoy:
+
+- La idempotencia existe en los tres endpoints.
+- `/incoming` y `/outgoing` usan una clave a nivel mensaje.
+- `/status` usa una clave hash estable que incluye proveedor, endpoint, conversacion, mensaje, estado y timestamp de cambio.
+- La tabla `messages` actualiza `delivery_status` con una logica de progresion para no degradar estados posteriores como `read`.
+
+## Estructura del Proyecto
+
+```text
+src/
+  handlers/
+  services/
+  mappers/
+  repositories/
+  db/
+  models/
+  utils/
+database/
+  init_db.sql
+  migrations/
+  query_packs/
+docs/
+events/
+layer/
+tests/
+  fixtures/
+template.yaml
+samconfig.toml
+Dockerfile
+docker-compose.yml
+```
+
+Referencias utiles del repo:
+
+- [`database/init_db.sql`](database/init_db.sql): DDL inicial del esquema.
+- [`database/migrations/`](database/migrations/): cambios incrementales orientados a capa analitica/Grafana.
+- [`database/query_packs/`](database/query_packs/): consultas de validacion y reconciliacion.
+- [`docs/persistence-traceability-matrix.md`](docs/persistence-traceability-matrix.md): matriz campo a campo entre fixtures, mappers, repository y DDL.
+- [`docs/grafana-analytics-gap-analysis.md`](docs/grafana-analytics-gap-analysis.md): analisis de brechas para la capa analitica.
+- [`docs/grafana-analytics-ddl-proposal.md`](docs/grafana-analytics-ddl-proposal.md): propuesta DDL complementaria para analitica.
+- [`events/`](events/): eventos API Gateway listos para `sam local invoke`.
+
+## Base de Datos
+
+El proyecto persiste en Aurora MySQL RDS. La conexion se implementa en `src/db/connection.py` con cache de conexion por runtime Lambda y validacion de reuso mediante `ping(reconnect=False)`.
+
+El archivo [`database/init_db.sql`](database/init_db.sql) es la referencia principal del modelo de datos. Hoy define al menos estas tablas:
+
+- `webhook_events_raw`
 - `customers`
 - `operators`
 - `conversations`
 - `messages`
 - `conversation_snapshots`
 - `conversation_contexts`
+- `conversation_metrics`
 
-El mapeo usa `PROVIDER_NAME=botmaker`, `source_endpoint=status` y
-`event_type=message_status_snapshot`.
+Estado actual de uso:
 
-Decisiones de identificacion usadas para los payloads reales recibidos:
+- Los endpoints escriben hoy en las primeras siete tablas de la lista.
+- `conversation_metrics` existe en el DDL, pero la persistencia actual no la alimenta desde los webhooks.
 
-- `customer_external_id`: top-level `_id_`, con fallback a
-  `LAST_MESSAGE.customerId`.
-- `conversation_external_id`: `LAST_MESSAGE.sessionId`. Si Botmaker envia un
-  snapshot sin `LAST_MESSAGE`, se usa `conversationId`/`sessionId` si existe y,
-  como ultimo fallback, el customer id para no perder raw/contexto.
-- `contact_external_id`: `PLATFORM_CONTACT_ID` o `LAST_MESSAGE.contactId`.
-- `conversation_started_at`: `LAST_MESSAGE.sessionCreationTime`, con fallback a
-  `CREATION_TIME`.
-- `snapshot_at`: `STATUS_CHANGE_TIME`, con fallback a `LAST_MESSAGE.date`.
+## Fixtures Reales
 
-La clave de idempotencia `external_event_key` se calcula con hash estable de:
-proveedor, endpoint, conversacion, ultimo mensaje, `STATUS`,
-`STATUS_CHANGE_TIME`/`snapshot_at` y customer. Esto permite persistir como
-eventos distintos `delivered` y `read` para el mismo mensaje, pero ignorar el
-mismo snapshot repetido.
+El repositorio incluye payloads reales para desarrollo, regresion y validacion de mapping:
 
-La persistencia sigue este flujo:
+- [`tests/fixtures/incoming/`](tests/fixtures/incoming/): 26 fixtures de mensajes entrantes.
+- [`tests/fixtures/outgoing/`](tests/fixtures/outgoing/): 13 fixtures de mensajes salientes.
+- [`tests/fixtures/status/`](tests/fixtures/status/): 22 fixtures de snapshots y estados.
 
-1. Parseo y validacion basica del body JSON.
-2. Insert idempotente en `webhook_events_raw` con estado `processing`.
-3. Si el raw ya existe y esta `processed`, respuesta 200 con
-   `duplicate_ignored`. Si existe en `failed`, se reintenta la normalizacion
-   usando el mismo `raw_event_id`.
-4. Normalizacion transaccional en tablas de dominio.
-5. Marcado del raw como `processed`; si falla la normalizacion, se marca
-   `failed` con `processing_error`.
+Estos fixtures se usan para:
 
-Cuando `/status` complementa `messages.delivery_status`, conserva la progresion
-de estado (`queued`/`sent` -> `delivered` -> `read` -> `failed`) para evitar que
-un snapshot tardio degrade un mensaje ya marcado como leido.
+- validar mappers contra datos reales
+- probar regresiones de idempotencia
+- levantar `sam local start-api` y enviar payloads reales con `curl`
+- contrastar el comportamiento implementado con el DDL y la matriz de trazabilidad
 
-Las variables dinamicas de negocio (`AP_*`, `Actividad*`, `IssueResuelto`,
-`PreguntarAccionCompleta`, `RespuestaAccionCompleta`, `typeDate`, etc.) se
-guardan en `conversation_contexts.context_json`. Las variables sensibles obvias
-como `AP_MailTomador` y `AP_TipoDocumentoTomador` no se expanden en el contexto
-normalizado; el raw conserva el payload completo.
+## Variables de Entorno
 
-## Endpoint `POST /incoming`
+Variables realmente consumidas por el codigo, definidas desde `template.yaml`:
 
-`/incoming` recibe eventos puntuales de mensaje entrante enviados por Botmaker.
-A diferencia de `/status`, no representa un snapshot global de conversacion ni
-de delivery status. El foco de normalizacion es el mensaje, manteniendo la
-trazabilidad minima de customer y conversacion para que luego `/status` pueda
-complementar metadata.
+| Variable | Uso |
+| --- | --- |
+| `APP_ENV` | ambiente de aplicacion |
+| `ENVIRONMENT` | fallback de ambiente para compatibilidad con SAM |
+| `LOG_LEVEL` | nivel de logging |
+| `PROVIDER_NAME` | proveedor logico de eventos; por defecto `botmaker` |
+| `DB_HOST` | host de Aurora/RDS |
+| `DB_PORT` | puerto MySQL |
+| `DB_NAME` | nombre de base |
+| `DB_USER` | usuario de base |
+| `DB_PASSWORD` | password de base |
+| `DB_CONNECT_TIMEOUT_SECONDS` | timeout de conexion MySQL |
 
-El payload completo se guarda primero en `webhook_events_raw` con
-`PROVIDER_NAME=botmaker`, `source_endpoint=incoming` y
-`event_type=incoming_message`. Si el raw ya existe, la Lambda responde 200 con
-`duplicate_ignored` y no vuelve a insertar entidades normalizadas.
+Notas:
 
-Mapeo principal confirmado contra `database/init_db.sql` y los fixtures reales:
+- `APP_ENV` tiene prioridad sobre `ENVIRONMENT`.
+- La conexion a base requiere `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD`.
+- `samconfig.toml` incluye configuracion default de build/deploy/local, pero no versiona `DbPassword`.
 
-- `message_external_id`: `_id_`.
-- `conversation_external_id`: `sessionId`.
-- `customer_external_id`: `customerId`.
-- `contact_external_id`: `contactId`.
-- `conversation_started_at`: `sessionCreationTime`.
-- `message_at`: `date`.
-- `channel`: `chatPlatform`.
-- `business_channel_address`: `WHATSAPP_NUMBER`.
-- `direction`: `inbound` cuando `from=user/customer` o `fromCustomer=true`.
-- `sender_type`: `customer` para los mensajes actuales de usuario.
-- `message_text`: `message`.
-- `is_button` y `button_label`: `isButton` y `buttonName`.
-- `queue_name` y `current_queue_name`: `queue`.
+## Parametros SAM Relevantes
 
-La clave de idempotencia se calcula a nivel mensaje como:
+Ademas de las variables de entorno, `template.yaml` expone parametros de despliegue para infraestructura:
 
-```text
-incoming:v1:{provider_name}:message:{_id_}
-```
+- `Environment`
+- `LogLevel`
+- `LambdaRoleName`
+- `ManageLambdaVpcAccessPolicy`
+- `DbHost`
+- `DbPort`
+- `DbName`
+- `DbUser`
+- `DbPassword`
+- `LambdaSubnetIds`
+- `LambdaSecurityGroupIds`
+- `LambdaVpcId`
+- `RdsSecurityGroupId1`
+- `RdsSecurityGroupId2`
 
-Si en el futuro Botmaker enviara un evento sin `_id_`, el mapper genera un
-fallback deterministico con `sessionId`, `customerId`, `date`, `contactId` y
-contenido del mensaje. Ese fallback permite conservar idempotencia sin mezclar
-eventos de `/incoming` con snapshots de `/status`.
+Si la Lambda necesita acceder a RDS dentro de subredes privadas, el template soporta VPC config y, opcionalmente, crear un security group administrado para la Lambda y reglas inbound hacia RDS.
 
-Persistencia normalizada:
+## Ejecucion Local
 
-1. Insert idempotente del raw con estado `processing`.
-2. Upsert de `customers`, conservando datos existentes cuando el payload trae
-   nulos.
-3. Upsert acotado de `conversations`: customer, canal, direccion de canal,
-   inicio de conversacion, primer mensaje de usuario, ultimo mensaje y cola.
-   No actualiza `status_current`, contexto, resolucion, pendientes ni flags de
-   bot porque esos datos pertenecen al flujo `/status`.
-4. Upsert de `messages` con el `_id_` del mensaje como clave externa.
-5. Marcado del raw como `processed`; ante error de normalizacion queda `failed`
-   con `processing_error`.
-
-Fixtures reales del webhook entrante quedaron en `tests/fixtures/incoming`.
-
-## Endpoint `POST /outgoing`
-
-`/outgoing` recibe eventos puntuales de mensaje saliente enviados por Botmaker.
-Completa la linea de tiempo que arman `/incoming` y `/status`: el primero
-registra mensajes del usuario, `/outgoing` registra mensajes emitidos desde
-Botmaker hacia el contacto, y `/status` agrega snapshots y estados posteriores.
-
-El payload completo se guarda primero en `webhook_events_raw` con
-`PROVIDER_NAME=botmaker`, `source_endpoint=outgoing` y
-`event_type=outgoing_message`. Si el raw ya existe, la Lambda responde 200 con
-`duplicate_ignored` y no vuelve a normalizar entidades.
-
-Mapeo principal confirmado contra `database/init_db.sql` y los 13 fixtures
-reales de `tests/fixtures/outgoing`:
-
-- `message_external_id`: `_id_`.
-- `conversation_external_id`: `sessionId`.
-- `customer_external_id`: `customerId`.
-- `contact_external_id`: `contactId`.
-- `operator_external_id`: `operatorId` cuando `from=operator`.
-- `operator_name`: `operatorName`, con fallback a `fromName`.
-- `operator_email`: `operatorEmail`.
-- `conversation_started_at`: `sessionCreationTime`.
-- `message_at`: `date`.
-- `channel`: `chatPlatform`.
-- `business_channel_address`: `WHATSAPP_NUMBER`.
-- `direction`: siempre `outbound` para este endpoint.
-- `sender_type`: `operator` para los fixtures actuales. El mapper tambien
-  acepta `bot` si Botmaker lo envia explicitamente.
-- `message_text`: `message`.
-- `queue_name` y `current_queue_name`: `queue`.
-- Adjuntos: `audio` se guarda como `attachment_type=audio`; `file` se guarda
-  como `attachment_type=file`.
-
-Los fixtures actuales muestran solo mensajes salientes de operador humano. No
-hay fixtures reales con `from=bot` en `/outgoing`; el mapper lo soporta de forma
-tolerante sin crear operador.
-
-La clave de idempotencia se calcula a nivel mensaje como:
-
-```text
-outgoing:v1:{provider_name}:message:{_id_}
-```
-
-Si Botmaker enviara un evento sin `_id_`, el mapper genera un fallback
-deterministico con `sessionId`, `customerId`, `date`, `from`, `operatorId`,
-contenido del mensaje y adjunto. En los fixtures reales `outgoing-05.json` y
-`outgoing-06.json` tienen el mismo `_id_`, por lo que se resuelven como el mismo
-evento idempotente.
-
-Persistencia normalizada:
-
-1. Insert idempotente del raw con estado `processing`.
-2. Upsert de `customers`, conservando datos existentes cuando el payload no
-   trae informacion mas completa.
-3. Upsert de `operators` solo cuando el sender es operador y existe identificador
-   o metadata suficiente.
-4. Upsert acotado de `conversations`: customer, canal, direccion de canal,
-   inicio de conversacion, primera respuesta bot/humana segun `sender_type`,
-   ultimo mensaje, ultima cola y ultimo autor cuando aplica. No actualiza
-   `status_current`, contexto, resolucion, pendientes ni flags de bot.
-5. Upsert de `messages` con `_id_` como clave externa, `direction=outbound` y
-   `operator_id` asociado cuando corresponde.
-6. Marcado del raw como `processed`; ante error de normalizacion queda `failed`
-   con `processing_error`.
-
-## Dependencias
-
-Las dependencias compartidas viven en `layer/requirements.txt`. Por ahora solo
-incluye `PyMySQL`, porque las tres Lambdas van a compartir la misma conexion a
-RDS. AWS SAM construye el layer con `BuildMethod: python3.13`.
-
-## Variables de entorno
-
-Las funciones esperan estas variables, definidas desde `template.yaml`:
-
-- `APP_ENV`
-- `ENVIRONMENT`
-- `LOG_LEVEL`
-- `PROVIDER_NAME`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_CONNECT_TIMEOUT_SECONDS`
-
-No hay credenciales hardcodeadas. Para despliegues reales, pasar los parametros
-de base de datos con `sam deploy --parameter-overrides` o mediante el pipeline.
-
-`APP_ENV` es la variable principal para el ambiente de aplicacion. `ENVIRONMENT`
-queda disponible por compatibilidad con el parametro `Environment` de SAM.
-
-## Modulos comunes
-
-La configuracion tecnica compartida queda centralizada en estos modulos:
-
-- `src/utils/config.py`: resuelve y valida variables de entorno. Expone
-  `get_app_config()` y `get_database_config()`.
-- `src/db/connection.py`: crea y reutiliza una conexion PyMySQL a Aurora MySQL.
-  Valida que la conexion cacheada siga viva antes de reutilizarla y expone
-  helpers para cursor y transacciones.
-- `src/utils/log.py`: configura logging JSON estructurado para CloudWatch, con
-  `get_logger()` y `log_exception()`.
-- `src/utils/exceptions.py`: define excepciones base del proyecto para errores
-  de configuracion, validacion, base de datos y procesamiento.
-- `src/utils/http.py`: estandariza respuestas Lambda/API Gateway de exito y
-  error.
-- `src/repositories/base.py`: ofrece una base reutilizable para queries
-  parametrizadas, inserts simples y transacciones.
-- `src/utils/events.py`: contiene helpers compartidos para datos comunes del
-  evento Lambda, como `request_id`.
-
-Las futuras lambdas no deberian leer variables de entorno, crear conexiones ni
-armar respuestas HTTP por su cuenta. Esas responsabilidades deben pasar por los
-modulos comunes.
-
-## Conexion a Aurora RDS
-
-La conexion usa `PyMySQL`, incluido en el Lambda Layer. La funcion
-`get_connection()` mantiene una conexion cacheada a nivel de modulo para
-aprovechar la reutilizacion del runtime de Lambda entre invocaciones. Antes de
-devolver la conexion cacheada ejecuta `ping(reconnect=False)`; si ya no sirve,
-la descarta y crea una nueva.
-
-Para operaciones que requieran multiples escrituras, usar la base transaccional
-desde repositories:
-
-```python
-from repositories.base import BaseRepository
-
-
-class ExampleRepository(BaseRepository):
-    def save_many(self, rows):
-        with self.transaction() as connection:
-            with connection.cursor() as cursor:
-                for row in rows:
-                    cursor.execute(
-                        "INSERT INTO example_table (name) VALUES (%s)",
-                        (row["name"],),
-                    )
-```
-
-Para operaciones simples se puede usar `execute()`, `fetch_one()`, `fetch_all()`
-o `insert_one()` desde `BaseRepository`.
-
-## Build
+Build del proyecto:
 
 ```bash
 sam build
 ```
 
-## Ejecucion local
+`samconfig.toml` deja configurado `use_container = true` para el build default. Ejecutar `sam build` antes de invocar o desplegar es importante porque el layer instala `PyMySQL` desde `layer/requirements.txt`.
 
-Invocar una funcion con un evento de ejemplo:
+Invocacion local de cada Lambda con eventos API Gateway del repo:
 
 ```bash
 sam local invoke IncomingWebhookFunction --event events/incoming_event.json
@@ -322,93 +218,84 @@ sam local invoke OutgoingWebhookFunction --event events/outgoing_event.json
 sam local invoke StatusWebhookFunction --event events/status_event.json
 ```
 
-Levantar API Gateway local:
+Levantar la API local:
 
 ```bash
 sam local start-api
 ```
 
-Luego probar:
+Luego se pueden enviar fixtures reales directamente al endpoint local:
 
 ```bash
 curl -X POST http://127.0.0.1:3000/incoming \
   -H "Content-Type: application/json" \
   --data-binary @tests/fixtures/incoming/incoming-01.json
-```
 
-Ejemplo con `/status` usando un fixture real:
+curl -X POST http://127.0.0.1:3000/outgoing \
+  -H "Content-Type: application/json" \
+  --data-binary @tests/fixtures/outgoing/outgoing-01.json
 
-```bash
 curl -X POST http://127.0.0.1:3000/status \
   -H "Content-Type: application/json" \
   --data-binary @tests/fixtures/status/status-13.json
 ```
 
-Ejemplo con `/incoming` usando otro fixture real:
+Importante:
 
-```bash
-curl -X POST http://127.0.0.1:3000/incoming \
-  -H "Content-Type: application/json" \
-  --data-binary @tests/fixtures/incoming/incoming-02.json
-```
+- Para validar persistencia end-to-end hace falta una base MySQL/Aurora accesible y las variables `DB_*` resueltas.
+- Si solo se quiere validar mapping y contratos sin base, la suite de tests actual no necesita conectarse a RDS.
 
-Ejemplo con `/outgoing` usando un fixture real:
+## Pruebas
 
-```bash
-curl -X POST http://127.0.0.1:3000/outgoing \
-  -H "Content-Type: application/json" \
-  --data-binary @tests/fixtures/outgoing/outgoing-01.json
-```
-
-Para ejecutar tests unitarios:
+Suite actual:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-## Deploy
+Cobertura hoy:
 
-Primer despliegue guiado:
+- `tests/test_incoming_mapper.py`: mapeo e idempotencia de `/incoming` usando fixtures reales.
+- `tests/test_outgoing_mapper.py`: mapeo e idempotencia de `/outgoing` usando fixtures reales.
+- `tests/test_persistence_contract.py`: valida que los `INSERT` del repository esten alineados con las columnas declaradas en `database/init_db.sql`.
+
+Observacion honesta sobre el estado actual:
+
+- No hay un test unitario dedicado a `status_mapper` en `tests/`.
+- La trazabilidad funcional de `/status` esta documentada en `docs/persistence-traceability-matrix.md` y soportada por fixtures reales bajo `tests/fixtures/status/`.
+
+## Despliegue
+
+Comandos confirmados en el repo:
 
 ```bash
 sam deploy --guided
 ```
 
-Despliegue no interactivo de ejemplo:
+`samconfig.toml` define configuracion default para:
 
-```bash
-sam build
+- `build`
+- `validate`
+- `deploy`
+- `local_start_api`
 
-sam deploy --parameter-overrides \
-  --template-file .aws-sam/build/template.yaml \
-  Environment=dev \
-  LogLevel=INFO \
-  DbHost=mecubrochatdev-dc1f5878.ct5618n6bomg.us-east-1.rds.amazonaws.com \
-  DbPort=3306 \
-  DbName=mecubrochatdev \
-  DbUser=admin \
-  DbPassword='--------------' \
-  LambdaSubnetIds='subnet-0227e23f3483b5066,subnet-0e2ef6f846e56d35e,subnet-00e22d5c6f0406810' \
-  LambdaSecurityGroupIds='sg-0f7dcb59deaf75f34'
-```
+El stack default es `botmaker-webhook-ingestion`. El template expone outputs para la URL base del API y para cada path:
 
-Si RDS esta en subnets privadas, pasar `LambdaSubnetIds` con subnets privadas
-de la misma VPC de RDS. Con `LambdaVpcId`, el stack crea un security group para
-las Lambdas. Con `RdsSecurityGroupId1` y opcionalmente `RdsSecurityGroupId2`, el
-stack agrega reglas inbound MySQL/Aurora `TCP 3306` desde el security group de
-Lambda hacia los security groups de RDS.
+- `WebhookApiUrl`
+- `IncomingWebhookPath`
+- `OutgoingWebhookPath`
+- `StatusWebhookPath`
 
-Para usar un security group de Lambda ya existente, pasar `LambdaSecurityGroupIds`
-en lugar de `LambdaVpcId`. En ese caso, configurar manualmente el inbound de RDS.
+## Buenas Practicas para Seguir Desarrollando
 
-Ejecutar `sam build` antes de `sam deploy` es necesario para que SAM instale las
-dependencias de `layer/requirements.txt` dentro del Lambda Layer. Si se despliega
-sin build, el layer sube solo con el archivo `requirements.txt` y la funcion falla
-con `ModuleNotFoundError` para `pymysql`.
+- Reutilizar `src/utils/`, `src/db/` y `src/repositories/base.py` antes de agregar helpers nuevos.
+- Mantener `database/init_db.sql` como fuente de verdad del esquema y contrastar cambios con `tests/test_persistence_contract.py`.
+- No duplicar logica de parseo, respuesta HTTP o configuracion dentro de handlers.
+- Tratar `tests/fixtures/` como insumo de regresion; si aparece un payload nuevo de Botmaker, agregar fixture antes de ajustar el mapper.
+- Mantener el mismo criterio de idempotencia por endpoint al extender reglas de persistencia.
+- Evitar que `/incoming` o `/outgoing` invadan responsabilidades de snapshots/contexto propias de `/status`.
+- Si se agregan columnas o tablas nuevas para analitica, dejar claro si pasan a poblarse en tiempo de webhook o por procesos posteriores.
 
-## Estado actual
+## Estado Actual
 
-`/status`, `/incoming` y `/outgoing` implementan persistencia real e
-idempotente contra el DDL de `database/init_db.sql`. `/outgoing` normaliza raw,
-customer, operator, conversation y message sin invadir las tablas de snapshot y
-contexto propias de `/status`.
+El proyecto ya tiene persistencia implementada para `incoming`, `outgoing` y `status` sobre el esquema base definido en `database/init_db.sql`. La base comun de configuracion, conexion, logging, errores y repositorios ya existe y es el punto correcto para extender el sistema sin romper consistencia entre endpoints.
