@@ -350,7 +350,7 @@ SELECT
     queue_name,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_conversations_daily
-WHERE conversation_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+WHERE conversation_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-24')
 GROUP BY
     conversation_date,
     channel,
@@ -401,7 +401,7 @@ SELECT
     SUM(snapshot_count) AS snapshots,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_snapshots_daily
-WHERE snapshot_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+WHERE snapshot_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-24')
 GROUP BY
     snapshot_date,
     channel,
@@ -433,7 +433,7 @@ SELECT
     SUM(intent_occurrence_count) AS occurrences,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_intents_daily
-WHERE intent_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+WHERE intent_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-24')
 GROUP BY intent_name
 ORDER BY occurrences DESC
 LIMIT 20;
@@ -470,7 +470,7 @@ SELECT
     handoff_detection_basis_aprox
 FROM vw_grafana_handoff_to_human_aprox
 WHERE COALESCE(conversation_started_at, first_human_response_at)
-      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-21 23:59:59')
+      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-24 23:59:59')
 ORDER BY first_human_response_at DESC;
 ```
 
@@ -504,7 +504,7 @@ SELECT
     SUM(outbound_message_count) AS outbound_messages,
     SUM(conversation_count) AS conversations
 FROM vw_grafana_operator_volume_from_messages
-WHERE message_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+WHERE message_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-24')
 GROUP BY
     message_date,
     operator_name,
@@ -565,7 +565,7 @@ SELECT
     AVG(time_to_first_human_response_seconds_aprox) AS avg_first_human_response_seconds_aprox
 FROM vw_grafana_conversations_current
 WHERE COALESCE(conversation_started_at, last_message_at)
-      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-21 23:59:59')
+      BETWEEN TIMESTAMP('2026-04-20 00:00:00') AND TIMESTAMP('2026-04-24 23:59:59')
 GROUP BY
     channel,
     current_queue_name;
@@ -599,7 +599,7 @@ SELECT
     processing_status,
     SUM(event_count) AS events
 FROM vw_grafana_raw_ingestion_health_daily
-WHERE event_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-21')
+WHERE event_date BETWEEN DATE('2026-04-20') AND DATE('2026-04-24')
 GROUP BY
     event_date,
     source_endpoint,
