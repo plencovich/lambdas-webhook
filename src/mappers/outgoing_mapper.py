@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from mappers.common import normalize_optional_text
 from models.outgoing_event import OutgoingWebhookEvent
 from models.status_event import (
     StatusConversation,
@@ -350,12 +351,7 @@ def _to_utc_naive(value: datetime | None) -> datetime | None:
 
 
 def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-    return str(value)
+    return normalize_optional_text(value)
 
 
 def _bool(value: Any) -> bool:

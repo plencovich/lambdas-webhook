@@ -109,6 +109,15 @@ class IncomingMapperTest(unittest.TestCase):
         self.assertEqual(event.message.button_label, "Cotizar")
         self.assertEqual(event.message.message_text, "Cotizar")
 
+    def test_normalizes_null_like_last_name(self):
+        payload = load_payload("incoming-01.json")
+        payload["fromName"] = "Lucasanavarro null"
+
+        event = map_payload(payload)
+
+        self.assertEqual(event.customer.customer_first_name, "Lucasanavarro")
+        self.assertIsNone(event.customer.customer_last_name)
+
     def test_external_event_key_uses_message_id_for_idempotency(self):
         payload = load_payload("incoming-01.json")
         event = map_payload(payload)
@@ -121,6 +130,33 @@ class IncomingMapperTest(unittest.TestCase):
             event.external_event_key,
             "incoming:v1:botmaker:message:51FH77RLXF1BZIEHOLMQ",
         )
+
+    def test_maps_image_attachment_without_text(self):
+        event = map_payload(
+            {
+                "WHATSAPP_NUMBER": "5491171017096",
+                "_id_": "incoming-image-only-message",
+                "chatPlatform": "whatsapp",
+                "contactId": "5493584232743",
+                "customerId": "NWHAYJVORB4TSWTBY3PQ",
+                "date": "2026-04-22T17:35:06.272265+00:00",
+                "from": "user",
+                "fromCustomer": True,
+                "fromName": "Hanan Pacha Itinerante",
+                "hasAttachment": True,
+                "image": "https://storage.googleapis.com/storage.botmaker.com/public/res/mecubro/users/example-image.jpg",
+                "operatorId": None,
+                "queue": "Seguros-1",
+                "sessionCreationTime": "2026-04-17T18:37:29.922Z",
+                "sessionId": "NWHAYJVORB4TSWTBY3PQ_2026-04-17T18:37:29.922Z",
+            }
+        )
+
+        self.assertTrue(event.message.has_attachment)
+        self.assertEqual(event.message.attachment_type, "image")
+        self.assertIn("example-image.jpg", event.message.attachment_url)
+        self.assertIsNone(event.message.message_text)
+        self.assertTrue(event.message.is_customer_message)
 
     def test_service_ignores_duplicate_raw_event_without_normalizing_again(self):
         repository = FakeDuplicateRepository()

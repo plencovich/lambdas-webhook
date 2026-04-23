@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from mappers.common import normalize_optional_text
 from models.status_event import (
     StatusContext,
     StatusConversation,
@@ -19,19 +20,25 @@ from utils.exceptions import ValidationError
 
 STATUS_EVENT_TYPE = "message_status_snapshot"
 
-_DYNAMIC_CONTEXT_PREFIXES = (
-    "AP_",
-    "Actividad",
+_DYNAMIC_CONTEXT_ALLOWLIST = {
+    "AP_Actividad",
+    "ActividadCode",
+    "ActividadName",
     "BusquedaActividad",
     "DeathAmount",
     "IssueResuelto",
-    "Preguntar",
-    "Respuesta",
+    "PreguntarAccionCompleta",
+    "RespuestaAccionCompleta",
     "typeDate",
-)
-_SENSITIVE_DYNAMIC_KEYS = {
-    "AP_MailTomador",
-    "AP_TipoDocumentoTomador",
+    "AP_Desde",
+    "AP_Hasta",
+    "AP_validity_start",
+    "AP_validity_end",
+    "AP_Price",
+    "AP_Price_Total",
+    "AP_QuoteId",
+    "AP_CoverageId",
+    "AP_Quote_Descrption",
 }
 
 
@@ -301,6 +308,7 @@ def _message(
                     "isButton",
                     "buttonName",
                     "hasAttachment",
+                    "image",
                     "audio",
                     "file",
                     "attachmentUrl",
@@ -350,8 +358,9 @@ def _dynamic_context(payload: Mapping[str, Any]) -> dict[str, Any] | None:
         key: value
         for key, value in payload.items()
         if isinstance(key, str)
-        and key not in _SENSITIVE_DYNAMIC_KEYS
-        and any(key.startswith(prefix) for prefix in _DYNAMIC_CONTEXT_PREFIXES)
+        and key in _DYNAMIC_CONTEXT_ALLOWLIST
+        and value is not None
+        and normalize_optional_text(value) is not None
     }
     return context or None
 
@@ -377,7 +386,8 @@ def _sender_name(last_message: Mapping[str, Any], sender_type: str | None) -> st
 
 def _attachment_url(last_message: Mapping[str, Any]) -> str | None:
     return (
-        _text(last_message.get("audio"))
+        _text(last_message.get("image"))
+        or _text(last_message.get("audio"))
         or _text(last_message.get("file"))
         or _text(last_message.get("attachmentUrl"))
         or _text(last_message.get("fileUrl"))
@@ -388,6 +398,8 @@ def _attachment_url(last_message: Mapping[str, Any]) -> str | None:
 def _attachment_type(last_message: Mapping[str, Any], attachment_url: str | None) -> str | None:
     if not attachment_url:
         return None
+    if _text(last_message.get("image")):
+        return "image"
     if _text(last_message.get("audio")):
         return "audio"
     if _text(last_message.get("file")) or _text(last_message.get("fileUrl")):
@@ -433,12 +445,7 @@ def _to_utc_naive(value: datetime | None) -> datetime | None:
 
 
 def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-    return str(value)
+    return normalize_optional_text(value)
 
 
 def _bool(value: Any) -> bool:

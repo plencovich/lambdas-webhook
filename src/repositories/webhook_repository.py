@@ -1,6 +1,6 @@
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -647,6 +647,19 @@ class WebhookRepository(BaseRepository):
         if message is None:
             return None
 
+        existing_message = None
+        if event.source_endpoint == "status":
+            existing_message = self._fetch_existing_message(
+                cursor,
+                provider_name=message.provider_name,
+                message_external_id=message.message_external_id,
+            )
+        message = _merge_message_with_existing(
+            event=event,
+            message=message,
+            existing_message=existing_message,
+        )
+
         delivery_status_should_update = _delivery_status_should_update_sql()
         cursor.execute(
             f"""
@@ -802,6 +815,10 @@ class WebhookRepository(BaseRepository):
         customer_id: int,
     ) -> int:
         context = event.context
+        previous_context = self._fetch_latest_context(cursor, conversation_id=conversation_id)
+        if _should_skip_context_insert(previous_context, context):
+            return int(previous_context["id"])
+
         cursor.execute(
             """
             INSERT INTO conversation_contexts (
@@ -840,6 +857,62 @@ class WebhookRepository(BaseRepository):
             ),
         )
         return int(cursor.lastrowid)
+
+    def _fetch_existing_message(
+        self,
+        cursor: Any,
+        *,
+        provider_name: str,
+        message_external_id: str,
+    ) -> dict[str, Any] | None:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                attachment_type,
+                attachment_url,
+                client_payload,
+                message_text,
+                sender_name,
+                queue_name
+            FROM messages
+            WHERE provider_name = %s
+              AND message_external_id = %s
+            LIMIT 1
+            """,
+            (provider_name, message_external_id),
+        )
+        return cursor.fetchone()
+
+    def _fetch_latest_context(
+        self,
+        cursor: Any,
+        *,
+        conversation_id: int,
+    ) -> dict[str, Any] | None:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                snapshot_at,
+                product,
+                topic,
+                subtopic,
+                quote_external_id,
+                coverage_external_id,
+                quoted_total_amount,
+                quote_description,
+                activity_name,
+                completion_message_text,
+                context_json
+            FROM conversation_contexts
+            WHERE conversation_id = %s
+            ORDER BY snapshot_at DESC, id DESC
+            LIMIT 1
+            """,
+            (conversation_id,),
+        )
+        return cursor.fetchone()
 
     def _mark_raw_processed(self, cursor: Any, raw_event_id: int) -> None:
         cursor.execute(
@@ -886,6 +959,17 @@ def _json_dumps(value: Any) -> str | None:
     return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
 
 
+def _json_loads_if_needed(value: Any) -> Any:
+    if value is None or isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 def _mysql_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -906,6 +990,121 @@ def _tinyint_or_none(value: bool | None) -> int | None:
     if value is None:
         return None
     return _tinyint(value)
+
+
+def _merge_message_with_existing(
+    *,
+    event: StatusWebhookEvent | IncomingWebhookEvent | OutgoingWebhookEvent,
+    message: Any,
+    existing_message: dict[str, Any] | None,
+) -> Any:
+    if existing_message is None or event.source_endpoint != "status":
+        return message
+
+    existing_client_payload = _json_loads_if_needed(existing_message.get("client_payload"))
+    merged_client_payload = message.client_payload
+    if _client_payload_priority(existing_client_payload) > _client_payload_priority(message.client_payload):
+        merged_client_payload = existing_client_payload
+
+    return replace(
+        message,
+        sender_name=message.sender_name or existing_message.get("sender_name"),
+        message_text=message.message_text or existing_message.get("message_text"),
+        attachment_type=_preferred_attachment_type(
+            existing_message.get("attachment_type"),
+            message.attachment_type,
+        ),
+        attachment_url=message.attachment_url or existing_message.get("attachment_url"),
+        queue_name=message.queue_name or existing_message.get("queue_name"),
+        client_payload=merged_client_payload,
+    )
+
+
+def _client_payload_priority(payload: Any) -> int:
+    parsed = _json_loads_if_needed(payload)
+    if not isinstance(parsed, dict):
+        return 0
+    if "incoming_message" in parsed:
+        return 3
+    if "outgoing_message" in parsed:
+        return 3
+    if "last_message" in parsed:
+        return 1
+    return 0
+
+
+def _preferred_attachment_type(existing_value: str | None, new_value: str | None) -> str | None:
+    existing_rank = _attachment_type_specificity(existing_value)
+    new_rank = _attachment_type_specificity(new_value)
+
+    if existing_rank > new_rank:
+        return existing_value
+    if new_rank > existing_rank:
+        return new_value
+    return new_value or existing_value
+
+
+def _attachment_type_specificity(value: str | None) -> int:
+    if value is None:
+        return 0
+    normalized = value.strip().lower()
+    if not normalized:
+        return 0
+    if normalized == "attachment":
+        return 1
+    return 2
+
+
+def _should_skip_context_insert(
+    previous_context: dict[str, Any] | None,
+    context: Any,
+) -> bool:
+    if previous_context is None:
+        return False
+    return _context_signature_from_row(previous_context) == _context_signature_from_context(context)
+
+
+def _context_signature_from_row(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        row.get("product"),
+        row.get("topic"),
+        row.get("subtopic"),
+        row.get("quote_external_id"),
+        row.get("coverage_external_id"),
+        _decimal_signature(row.get("quoted_total_amount")),
+        row.get("quote_description"),
+        row.get("activity_name"),
+        row.get("completion_message_text"),
+        _json_signature(row.get("context_json")),
+    )
+
+
+def _context_signature_from_context(context: Any) -> tuple[Any, ...]:
+    return (
+        context.product,
+        context.topic,
+        context.subtopic,
+        context.quote_external_id,
+        context.coverage_external_id,
+        _decimal_signature(context.quoted_total_amount),
+        context.quote_description,
+        context.activity_name,
+        context.completion_message_text,
+        _json_signature(context.context_json),
+    )
+
+
+def _decimal_signature(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _json_signature(value: Any) -> str | None:
+    parsed = _json_loads_if_needed(value)
+    if parsed is None:
+        return None
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
 
 
 def _delivery_status_should_update_sql() -> str:

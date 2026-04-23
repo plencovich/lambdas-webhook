@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from mappers.common import normalize_optional_text, split_name
 from models.incoming_event import IncomingWebhookEvent
 from models.status_event import StatusConversation, StatusCustomer, StatusMessage
 from models.webhook_event import WebhookEnvelope
@@ -44,7 +45,7 @@ class IncomingPayloadMapper:
 
         contact_external_id = _first_text(payload, "contactId")
         business_channel_address = _first_text(payload, "WHATSAPP_NUMBER", "businessChannelAddress")
-        first_name, last_name = _split_name(_first_text(payload, "fromName"))
+        first_name, last_name = split_name(_first_text(payload, "fromName"))
         is_customer_message = (
             _bool_or_none(payload.get("fromCustomer"))
             if "fromCustomer" in payload
@@ -124,6 +125,7 @@ class IncomingPayloadMapper:
                         "isButton",
                         "buttonName",
                         "hasAttachment",
+                        "image",
                         "audio",
                         "attachmentUrl",
                         "fileUrl",
@@ -247,12 +249,14 @@ def _sender_type(payload: Mapping[str, Any]) -> str | None:
 
 
 def _attachment_url(payload: Mapping[str, Any]) -> str | None:
-    return _first_text(payload, "audio", "attachmentUrl", "fileUrl", "mediaUrl")
+    return _first_text(payload, "image", "audio", "attachmentUrl", "fileUrl", "mediaUrl")
 
 
 def _attachment_type(payload: Mapping[str, Any], attachment_url: str | None) -> str | None:
     if not attachment_url:
         return None
+    if _first_text(payload, "image"):
+        return "image"
     if _first_text(payload, "audio"):
         return "audio"
     return _first_text(payload, "attachmentType", "mediaType") or "attachment"
@@ -296,21 +300,7 @@ def _to_utc_naive(value: datetime | None) -> datetime | None:
 
 
 def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-    return str(value)
-
-
-def _split_name(value: str | None) -> tuple[str | None, str | None]:
-    if not value:
-        return None, None
-    parts = value.split(maxsplit=1)
-    first_name = parts[0]
-    last_name = parts[1] if len(parts) > 1 else None
-    return first_name, last_name
+    return normalize_optional_text(value)
 
 
 def _bool(value: Any) -> bool:
